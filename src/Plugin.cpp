@@ -21,6 +21,7 @@
 #include "XInputBackend.h"
 #include "DualSenseBackend.h"
 #include "DualSenseHidBackend.h"
+#include "DualSenseIdentity.h"
 #include "DualSenseState.h"
 
 namespace {
@@ -28,6 +29,7 @@ namespace {
     HANDLE g_ModuleEvent = nullptr;
     std::filesystem::path g_Directory;
     bool g_Diagnostics = false;
+    bool g_EdgeView = true;
     std::atomic<bool> g_MapEnabled{ false };
     GamepadButton g_MapButton = GamepadButton::Parse(L"View");
     bool g_LogEnabled = false;
@@ -123,6 +125,9 @@ namespace {
         NativePages::Prepare(); NativePages::Install();
         XInputBackend::Install();
         DualSenseHidBackend::Install();
+        // Sony identity view. Installed after the HID adapter so that adapter
+        // keeps the real hid.dll exports it captured.
+        DualSenseIdentity::Install();
     }
 
     // Loader notifications run under the loader lock. Only signal here;
@@ -156,6 +161,7 @@ namespace {
         const auto config = g_Directory / L"config.ini";
         g_LogEnabled = GetPrivateProfileIntW(L"DebugLog", L"Value", 0, config.c_str()) != 0;
         g_Diagnostics = GetPrivateProfileIntW(L"InputDiagnostics", L"Value", 0, config.c_str()) != 0;
+        g_EdgeView = GetPrivateProfileIntW(L"DualSenseEdgeView", L"Value", 1, config.c_str()) != 0;
         ConfigWatcher watcher;
         const bool watching = watcher.Start(g_Directory);
         LiveSettings current, initial;
@@ -167,6 +173,7 @@ namespace {
             DisconnectXInput);
         DualSenseBackend::Configure(Log, InputWanted, InputObserved, ProcessDualSense, DisconnectDualSense);
         DualSenseHidBackend::Configure(Log, InputWanted, InputObserved, ProcessDualSenseHid, DisconnectDualSenseHid);
+        DualSenseIdentity::Configure(Log, g_EdgeView);
         // Keep the verified map route available for later live enabling. Resolve
         // it once; changing config never repeats native map signature searches.
         NativePages::Configure(Log, true, g_Diagnostics, true, g_Directory.c_str());

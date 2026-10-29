@@ -60,7 +60,11 @@ namespace {
         if (!(g_Traced.load(std::memory_order_relaxed) & flag) &&
             !(g_Traced.fetch_or(flag, std::memory_order_relaxed) & flag)) Log(text);
     }
-    bool IsDualSense(unsigned vendor, unsigned product) { return vendor == 0x054C && product == 0x0CE6; }
+    // The Edge shares the DualSense report layout, so both product IDs use the
+    // same adapter. Identity presentation to the game lives in DualSenseIdentity.
+    bool IsDualSense(unsigned vendor, unsigned product) {
+        return vendor == 0x054C && (product == 0x0CE6 || product == 0x0DF2);
+    }
     int ReportSlot(UCHAR id) { return id == 1 ? 0 : id == 0x31 ? 1 : -1; }
 
     bool BuildDevice(PHIDP_PREPARSED_DATA preparsed, Device& device) {

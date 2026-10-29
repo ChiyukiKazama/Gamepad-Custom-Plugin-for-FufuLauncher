@@ -28,14 +28,17 @@
 | `MapBinding` | `1` | 启用自定义地图快捷键 | 支持 |
 | `MapButton` | `View` | 自定义地图快捷键键位 | 支持 |
 | `GamepadSensitivityMultiplier` | `1.0` | 手柄专用镜头灵敏度系数 | 支持 |
+| `DualSenseEdgeView` | `1` | 把 DualSense Edge 呈现为标准 DualSense | 启动时读取 |
 
-在启动器设置页修改后自动保存。三项设置会在文件保存完成后自动应用；手动编辑同目录 `config.ini` 也适用。改绑或切换地图开关时，已按住的键需先松开再按，避免误触。
+在启动器设置页修改后自动保存。三项设置会在文件保存完成后自动应用；手动编辑同目录 `config.ini` 也适用。`DualSenseEdgeView` 只在游戏启动时读取，改动后需重启游戏。改绑或切换地图开关时，已按住的键需先松开再按，避免误触。
 
 地图按键使用通用配置协议 `Type = enum`、`OptionsSource = gamepad`，需要支持该协议的启动器。Xbox 连接时显示 Xbox 按键名，标准 DualSense 连接时显示 DS 按键名；两者同时可见或都未连接时显示合并名称，插拔后刷新。换库保留已有绑定，只有主动选择才保存。旧配置只需修改这两个元数据字段，保留原 Value；旧启动器仍可用文本输入编辑按键名称。
 
 ### DualSense 连接
 
-适配接入游戏的原生 DualSense 驱动与 Windows HID 路径；游戏需先识别手柄。仅匹配标准 PS5 设备 `VID 054C / PID 0CE6`，不包含 DS4 适配。原生驱动支持 USB 与蓝牙报告布局；Windows HID 的 USB 输入在游戏读取到的报告副本中转换绑定按键，使后续原始报告读取和 HID 解码看到同一状态。蓝牙报告仍沿用解码适配，不改写其校验码；该路径的改绑效果需在实际蓝牙设备上确认。灵敏度复用手柄模式，多个手柄的按键状态独立。设备描述按手柄缓存，连续输入不会重新查询或解析描述。
+适配接入游戏的原生 DualSense 驱动与 Windows HID 路径；游戏需先识别手柄。匹配 PS5 设备 `VID 054C / PID 0CE6`，以及 `PID 0DF2` 的 DualSense Edge，不包含 DS4 适配。只按产品 ID 选择 DualSense 支持的宿主会忽略 Edge，它的陀螺仪校准、触觉与自适应扳机因此不会初始化；`DualSenseEdgeView` 打开时，本进程内的 `HidD_GetAttributes` 与产品名会把 Edge 呈现为标准 DualSense，使该宿主创建完整的 DualSense 驱动；标准 DualSense、DS4 与其他设备保持原身份。原生驱动支持 USB 与蓝牙报告布局；Windows HID 的 USB 输入在游戏读取到的报告副本中转换绑定按键，使后续原始报告读取和 HID 解码看到同一状态。蓝牙报告仍沿用解码适配，不改写其校验码；该路径的改绑效果需在实际蓝牙设备上确认。灵敏度复用手柄模式，多个手柄的按键状态独立。设备描述按手柄缓存，连续输入不会重新查询或解析描述。
+
+身份呈现只作用于本进程的 `hid.dll` 查询，不改动设备本身：其他进程、设备管理器与 Raw Input 设备路径仍显示物理设备的 `0DF2` 身份。报告内容、摇杆与陀螺仪数据、震动与自适应扳机输出保持原样，只有身份字段不同。
 
 通过 DS4Windows / Steam 等转换为虚拟 Xbox 控制器时，沿用原有 XInput 路径；虚拟 XInput 不提供独立触摸板按键。插件跟随游戏已有的输入读取，不注册额外 HID 接收窗口或向设备发送输入。USB 转换仅改变游戏报告副本中的绑定按键和中转按键，保留摇杆、陀螺仪、触摸坐标和厂商字段；震动与自适应扳机输出保持原样。
 
@@ -73,7 +76,7 @@ DualSense 名称也可用于配置，不区分大小写。`X` 仍表示 Xbox X /
 
 ## 构建与发布
 
-工程文件为 `GamepadCustomPlugin.vcxproj`。`src/XInputBackend.cpp/.h` 负责 Xbox 及虚拟 Xbox 的 XInput 接入，`src/DualSenseBackend.cpp/.h` 负责原生 DualSense 驱动接入，`src/DualSenseHidBackend.cpp/.h` 负责 PS5 的 Windows HID 报告副本及解码接入。`DualSenseState.h` 负责通用状态转换，`DualSenseHidState.h` 负责解码数据与按键路由之间的转换。入口、配置、地图、灵敏度与按键路由使用通用文件名。
+工程文件为 `GamepadCustomPlugin.vcxproj`。`src/XInputBackend.cpp/.h` 负责 Xbox 及虚拟 Xbox 的 XInput 接入，`src/DualSenseBackend.cpp/.h` 负责原生 DualSense 驱动接入，`src/DualSenseHidBackend.cpp/.h` 负责 PS5 的 Windows HID 报告副本及解码接入，`src/DualSenseIdentity.cpp/.h` 负责把 DualSense Edge 的身份呈现为标准 DualSense。`DualSenseState.h` 负责通用状态转换，`DualSenseHidState.h` 负责解码数据与按键路由之间的转换。入口、配置、地图、灵敏度与按键路由使用通用文件名。
 
 需要 Windows、PowerShell 7、Visual Studio 2026 C++ 构建工具、Windows SDK、`v145` 工具集，以及相邻的 `FufuLauncher.UnlockerIsland` 源码。通过 `vswhere` 查找 MSBuild，只读取主插件的 Patterns 定义和 MinHook 库，不重新编译或修改主插件。
 

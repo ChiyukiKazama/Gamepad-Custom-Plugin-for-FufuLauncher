@@ -53,6 +53,7 @@
     <ClCompile Include="src\LiveConfig.cpp" />
     <ClCompile Include="src\DualSenseBackend.cpp" />
     <ClCompile Include="src\DualSenseHidBackend.cpp" />
+    <ClCompile Include="src\DualSenseIdentity.cpp" />
     <ClCompile Include="src\XInputBackend.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -64,6 +65,7 @@
     <ClInclude Include="src\GamepadButton.h" />
     <ClInclude Include="src\DualSenseBackend.h" />
     <ClInclude Include="src\DualSenseHidBackend.h" />
+    <ClInclude Include="src\DualSenseIdentity.h" />
     <ClInclude Include="src\DualSenseHidState.h" />
     <ClInclude Include="src\XInputBackend.h" />
     <ClInclude Include="src\DualSenseState.h" />

@@ -33,7 +33,7 @@ function Read-Ini([string]$Text) {
 
 function Assert-PluginConfig([string]$Text, [string]$Version) {
     $ini = Read-Ini $Text
-    $expected = @('General', 'MapBinding', 'MapButton', 'GamepadSensitivityMultiplier')
+    $expected = @('General', 'MapBinding', 'MapButton', 'GamepadSensitivityMultiplier', 'DualSenseEdgeView')
     if (@(Compare-Object $expected @($ini.Keys)).Count) { throw 'Unexpected plugin configuration sections.' }
     if ($ini.General.File -cne 'GamepadCustomPlugin.dll' -or $ini.General.Version -cne $Version) {
         throw 'Config DLL name or version differs.'
@@ -41,8 +41,9 @@ function Assert-PluginConfig([string]$Text, [string]$Version) {
     if ($ini.MapBinding.Type -cne 'bool' -or $ini.MapBinding.Value -cne '1' -or
         $ini.MapButton.Type -cne 'enum' -or $ini.MapButton.OptionsSource -cne 'gamepad' -or
         $ini.MapButton.Value -cne 'View' -or $ini.GamepadSensitivityMultiplier.Type -cne 'string' -or
-        $ini.GamepadSensitivityMultiplier.Value -cne '1.0') {
-        throw 'The package must use the repository defaults for map binding, gamepad button and sensitivity.'
+        $ini.GamepadSensitivityMultiplier.Value -cne '1.0' -or $ini.DualSenseEdgeView.Type -cne 'bool' -or
+        $ini.DualSenseEdgeView.Value -cne '1') {
+        throw 'The package must use the repository defaults for map binding, gamepad button, sensitivity and the DualSense Edge view.'
     }
     return $ini
 }
