@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
 #include <intrin.h>
 #include <filesystem>
 #include <string>
@@ -19,6 +18,7 @@
 #include "GamepadButton.h"
 #include "Sensitivity.h"
 #include "DualSenseBackend.h"
+#include "GameBuild.h"
 
 namespace {
     // Same native signatures/calling convention used by the existing plugin.
@@ -301,11 +301,8 @@ void NativePages::Prepare() {
     const auto gameNt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(game + gameDos->e_lfanew);
     g_GameBegin = reinterpret_cast<std::uintptr_t>(game);
     g_GameEnd = g_GameBegin + gameNt->OptionalHeader.SizeOfImage;
-    wchar_t executable[32768]{};
-    GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
-    const bool isOS = SameName(std::filesystem::path(executable).filename().wstring(), L"GenshinImpact.exe");
-    // One primary signature, unique match required. No fixed new RVA or
-    // fallback patterns. InnerDispatcher is not on the observed input route.
+    // CN 7.2 keeps both signatures and the 32-byte event ABI. Require unique
+    // matches; InnerDispatcher is not on this native input route.
     if (g_MapBinding || g_Diagnostics) g_PageEntry = FindEntry(Signature(InputDispatchSignature));
     if (g_MapBinding) {
         const auto branch = static_cast<const unsigned char*>(FindEntry(Signature(MapBranchSignature)));
@@ -321,8 +318,7 @@ void NativePages::Prepare() {
             g_MapBinding = false;
         }
     }
-    g_SetActiveEntry = game + std::strtoull(isOS ? Patterns::OS::SetActiveOffset :
-        Patterns::CN::SetActiveOffset, nullptr, 16);
+    g_SetActiveEntry = game + GameBuild::SetActiveRva;
     // Both bodies are checked before hooking. SetActive's first six bytes may
     // already contain the main plugin's detour; the remaining body is unchanged.
     unsigned char activationCode[64]{};

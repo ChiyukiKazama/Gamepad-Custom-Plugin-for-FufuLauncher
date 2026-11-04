@@ -15,13 +15,13 @@ namespace {
     constexpr const char* SensitivitySignature =
         "56 57 55 53 48 83 EC 48 0F 29 74 24 30 44 89 C5 89 D3 48 89 CF "
         "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "48 8B 47 18 48 85 C0 74 ? 8B 8F ? ? ? ? 83 F9 03";
+        "48 8B 47 50 48 85 C0 74 ? 8B 8F AC 01 00 00 83 F9 03";
     // This separate native path serializes settings. Its getter calls must
     // receive unmodified values, not the effective in-game multiplier.
     constexpr const char* SaveSettingsSignature =
         "56 57 48 83 EC 28 48 89 CE 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "48 8B 7E 18 E8 ? ? ? ? 48 85 FF 0F 84 ? ? ? ? 48 89 47 10 "
-        "48 8B 7E 18 48 85 FF 0F 84 ? ? ? ? 8B 86 ? ? ? ? 89 47 1C";
+        "48 8B 7E 50 E8 ? ? ? ? 48 85 FF 0F 84 ? ? ? ? 48 89 47 10 "
+        "48 8B 7E 50 48 85 FF 0F 84 ? ? ? ? 8B 86 ? ? ? ? 89 47 1C";
     using GetSensitivity = float (WINAPI*)(void*, bool, bool, void*);
     GetSensitivity g_Original = nullptr;
     void* g_Entry = nullptr;
@@ -84,10 +84,24 @@ void Sensitivity::Prepare(Resolver find) {
     }
     const unsigned mode = *reinterpret_cast<const unsigned*>(entry + 0x3A);
     // Cross-check the mode field against the settings serialization branch.
-    if (mode >= 0x1000 || save[0xC9] != 0x8B || save[0xCA] != 0x86 ||
-        *reinterpret_cast<const unsigned*>(save + 0xCB) != mode) {
+    if (mode != 0x1AC || save[0xD0] != 0x8B || save[0xD1] != 0x86 ||
+        *reinterpret_cast<const unsigned*>(save + 0xD2) != mode) {
         Log("Camera sensitivity mode field cross-check failed; disabled");
         return;
+    }
+    // CN 7.2 serializes all three input modes through twelve direct getter
+    // calls. Verify the complete save path before applying any multiplier.
+    constexpr unsigned getterCalls[] = {
+        0xEC, 0x102, 0x121, 0x143, 0x15E, 0x174,
+        0x193, 0x1B2, 0x209, 0x21F, 0x23E, 0x260
+    };
+    for (const auto offset : getterCalls) {
+        const auto call = save + offset;
+        if (reinterpret_cast<DWORD64>(call + 5) > base + function->EndAddress ||
+            call[0] != 0xE8 || call + 5 + *reinterpret_cast<const int*>(call + 1) != entry) {
+            Log("Camera sensitivity settings-save calls mismatched; disabled");
+            return;
+        }
     }
     g_ModeOffset = mode;
     g_SaveBegin = base + function->BeginAddress;

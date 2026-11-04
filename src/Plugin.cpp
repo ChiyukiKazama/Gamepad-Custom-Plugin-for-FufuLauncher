@@ -22,6 +22,7 @@
 #include "DualSenseBackend.h"
 #include "DualSenseHidBackend.h"
 #include "DualSenseState.h"
+#include "GameBuild.h"
 
 namespace {
     HMODULE g_Module = nullptr;
@@ -175,6 +176,10 @@ namespace {
         if (_wcsicmp(executable.c_str(), L"YuanShen.exe") &&
             _wcsicmp(executable.c_str(), L"GenshinImpact.exe")) {
             Log("Unsupported process; plugin left inactive");
+            return 0;
+        }
+        if (!GameBuild::SupportedImage(GetModuleHandleW(nullptr))) {
+            Log("Unsupported game build; CN 7.2 fingerprint required, plugin left inactive");
             return 0;
         }
         Log("GamepadCustomPlugin 1.1.0 started; map binding and camera sensitivity; diagnostics opt-in");

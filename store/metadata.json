@@ -3,11 +3,11 @@
   "name": "手柄功能自定义插件",
   "developer": "风间千雪",
   "description": "支持自定义Xbox/DualSense手柄地图快捷键和专用灵敏度系数",
-  "long_description": "支持Xbox/DualSense手柄将“打开地图”绑定至任意单个键位和在原有镜头灵敏度基础上自定义一个仅在手柄控制时生效的灵敏度系数;已开源至https://github.com/ChiyukiKazama/Gamepad-Custom-Plugin-for-FufuLauncher",
-  "version": "1.1.0",
+  "long_description": "支持Xbox/DualSense手柄将“打开地图”绑定至任意单个键位和在原有镜头灵敏度基础上自定义一个仅在手柄控制时生效的灵敏度系数;插件已开源至https://github.com/ChiyukiKazama/Gamepad-Custom-Plugin-for-FufuLauncher",
+  "version": "1.1.1",
   "category": "实用工具",
   "tags": ["手柄", "快捷键", "灵敏度"],
-  "min_app_version": "1.7.1.1",
+  "min_app_version": "1.7.2.2",
   "dll_file_name": "GamepadCustomPlugin.dll",
-  "archive_file_name": "GamepadCustomPlugin-1.1.0.zip"
+  "archive_file_name": "GamepadCustomPlugin-1.1.1.zip"
 }

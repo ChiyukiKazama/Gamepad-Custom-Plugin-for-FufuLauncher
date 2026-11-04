@@ -61,6 +61,7 @@
     <ClInclude Include="src\NativeInputEvent.h" />
     <ClInclude Include="src\PageRedirectRequest.h" />
     <ClInclude Include="src\Signature.h" />
+    <ClInclude Include="src\GameBuild.h" />
     <ClInclude Include="src\GamepadButton.h" />
     <ClInclude Include="src\DualSenseBackend.h" />
     <ClInclude Include="src\DualSenseHidBackend.h" />
