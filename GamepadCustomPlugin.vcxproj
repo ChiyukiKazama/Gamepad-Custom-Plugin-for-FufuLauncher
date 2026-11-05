@@ -39,7 +39,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>$(UnlockerIslandRoot)\FufuLauncher.UnlockerIsland\MinHook\libMinHook.x64.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(UnlockerIslandRoot)\FufuLauncher.UnlockerIsland\MinHook\libMinHook.x64.lib;user32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -48,6 +48,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\Plugin.cpp" />
+    <ClCompile Include="src\HotSwitch.cpp" />
     <ClCompile Include="src\NativePages.cpp" />
     <ClCompile Include="src\Sensitivity.cpp" />
     <ClCompile Include="src\LiveConfig.cpp" />
@@ -64,6 +65,8 @@
     <ClInclude Include="src\Signature.h" />
     <ClInclude Include="src\GameBuild.h" />
     <ClInclude Include="src\GamepadButton.h" />
+    <ClInclude Include="src\HotSwitch.h" />
+    <ClInclude Include="src\DeviceActivity.h" />
     <ClInclude Include="src\DualSenseBackend.h" />
     <ClInclude Include="src\DualSenseHidBackend.h" />
     <ClInclude Include="src\DualSenseIdentity.h" />

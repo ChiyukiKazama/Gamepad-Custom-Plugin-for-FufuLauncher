@@ -18,6 +18,7 @@
 #include "GamepadButton.h"
 #include "Sensitivity.h"
 #include "DualSenseBackend.h"
+#include "HotSwitch.h"
 #include "GameBuild.h"
 
 namespace {
@@ -57,7 +58,7 @@ namespace {
     std::wstring g_MainPath, g_ShortMainPath;
     bool g_MainWaitLogged = false;
     NativePages::Logger g_Log = nullptr;
-    bool g_MapBinding = false, g_Diagnostics = false, g_Sensitivity = false, g_PrepareAttempted = false;
+    bool g_MapBinding = false, g_Diagnostics = false, g_HotSwitch = false, g_Sensitivity = false, g_PrepareAttempted = false;
     std::atomic<bool> g_Prepared{ false }, g_ActivationQueued{ false };
     std::atomic<bool> g_InstallAttempted{ false }, g_Ready{ false };
     // Diagnostic capture is armed by a button edge, not during game loading.
@@ -252,10 +253,11 @@ namespace {
     }
 }
 
-void NativePages::Configure(Logger log, bool mapBinding, bool diagnostics, bool sensitivity, const wchar_t* pluginDirectory) {
+void NativePages::Configure(Logger log, bool mapBinding, bool diagnostics, bool hotSwitch, bool sensitivity, const wchar_t* pluginDirectory) {
     g_Log = log;
     g_Diagnostics = diagnostics;
     g_MapBinding = mapBinding;
+    g_HotSwitch = hotSwitch;
     g_Sensitivity = sensitivity;
     const auto mainDirectory = std::filesystem::path(pluginDirectory).parent_path() / L"FuFuPlugin";
     const auto config = mainDirectory / L"config.ini";
@@ -278,7 +280,7 @@ bool NativePages::MatchesMainPath(const wchar_t* path, unsigned characters) {
 }
 
 void NativePages::Prepare() {
-    if ((!g_MapBinding && !g_Diagnostics && !g_Sensitivity) || g_PrepareAttempted) return;
+    if ((!g_MapBinding && !g_Diagnostics && !g_HotSwitch && !g_Sensitivity) || g_PrepareAttempted) return;
     // The injector uses GetShortPathNameW. Long basename lookup misses the
     // resulting FUFULA~1.DLL loader entry; full path lookup identifies the file.
     const auto main = reinterpret_cast<unsigned char*>(GetModuleHandleW(g_MainPath.c_str()));
@@ -350,6 +352,7 @@ void NativePages::Prepare() {
         static_cast<unsigned long long>(g_PageEntry ? reinterpret_cast<std::uintptr_t>(g_PageEntry) - base : 0),
         static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_SetActiveEntry) - base));
     Log(text);
+    if (g_HotSwitch) HotSwitch::Prepare(FindNative);
     if (g_Sensitivity) Sensitivity::Prepare(FindNative);
     DualSenseBackend::Prepare(FindNative);
     g_Prepared.store(true, std::memory_order_release);
@@ -361,8 +364,10 @@ bool NativePages::RequestActivation() {
         !g_ActivationQueued.exchange(true);
 }
 
+bool NativePages::IsReady() { return g_Ready.load(std::memory_order_acquire); }
+
 void NativePages::Install() {
-    if (!g_MapBinding && !g_Diagnostics && !g_Sensitivity) return;
+    if (!g_MapBinding && !g_Diagnostics && !g_HotSwitch && !g_Sensitivity) return;
     if (!g_Prepared.load(std::memory_order_acquire)) return;
     // This specific HID parser is outside the main plugin's hook targets. Its
     // observation wakes setup on a Sony-only system once main hooks are active;

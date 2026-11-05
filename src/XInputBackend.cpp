@@ -24,6 +24,7 @@ namespace {
     XInputBackend::Observed g_Observed = nullptr;
     XInputBackend::Process g_Process = nullptr;
     XInputBackend::Disconnect g_Disconnect = nullptr;
+    XInputBackend::Activity g_Activity = nullptr;
     thread_local unsigned g_InputDepth = 0;
 
     void Log(const char* text) { if (g_Log) g_Log(text); }
@@ -57,9 +58,9 @@ namespace {
 }
 
 void XInputBackend::Configure(Logger log, Wanted wanted, Observed observed, Process process,
-    Disconnect disconnect) {
+    Disconnect disconnect, Activity activity) {
     g_Log = log; g_Wanted = wanted; g_Observed = observed; g_Process = process;
-    g_Disconnect = disconnect;
+    g_Disconnect = disconnect; g_Activity = activity;
 }
 
 bool XInputBackend::MatchesModule(const wchar_t* name, std::size_t length) {
@@ -99,5 +100,22 @@ void XInputBackend::Install() {
         }
         backend.target = target;
         Log("XInputGetState hook installed");
+    }
+}
+
+void XInputBackend::PollActivity() {
+    // Keyboard mode may stop game-driven controller reads. Reuse one installed backend.
+    if (!g_Activity) return;
+    GetState read = nullptr;
+    for (const auto& backend : g_Backends) {
+        if (backend.original) { read = backend.original; break; }
+    }
+    if (!read) return;
+    for (unsigned controller = 0; controller < 4; ++controller) {
+        XINPUT_STATE state{};
+        ++g_InputDepth; // Polling must not be mistaken for game input.
+        const DWORD result = read(controller, &state);
+        --g_InputDepth;
+        g_Activity(controller, result == ERROR_SUCCESS ? &state.Gamepad : nullptr);
     }
 }
