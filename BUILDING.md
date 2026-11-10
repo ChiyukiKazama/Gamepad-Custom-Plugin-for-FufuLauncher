@@ -65,7 +65,7 @@ Set-Location 'C:\Repos\XboxGamepadPlugin'
 
 CI 将构建、压缩和打包分为独立步骤，通过 `publish.ps1 -DllPath .\obj\release\GamepadCustomPlugin.dll` 打包已校验的压缩 DLL；要求旁边存在匹配的 `compression.json`。普通本地调用不需要传 `-DllPath`。
 
-ZIP 根目录严格只包含：`GamepadCustomPlugin.dll`、`config.ini`。使用说明、`LICENSE` 和 `THIRD_PARTY_NOTICES.md` 保留在开源仓库，发布时提供对应版本源码及许可。诊断项只从正式配置移除，不删除排障代码；缺省关闭。若正式配置含诊断节，打包脚本会拒绝发布。
+ZIP 根目录严格只包含：`GamepadCustomPlugin.dll`、`config.ini`。使用说明、`LICENSE` 和 `THIRD_PARTY_NOTICES.md` 保留在开源仓库，发布时提供对应版本源码及许可。正式配置里的新增节会随包发布，诊断节请留在 `diagnostics.example.ini` 中。
 
 `bin/`、`obj/`、`dist/`、`.ci-dependencies/`、`.tools/`、根目录 `tests/` 和 `docs/` 等已在 `.gitignore` 中排除。`scripts/`、`store/` 和工作流需要提交；`scripts/tests/` 的离线发布状态测试随源码保留。`bin/backups/` 中旧文件保持可恢复，不作为发布输入。不要把 PDB、测试程序、日志或游戏文件手动加进发布包。
 

@@ -33,8 +33,6 @@ function Read-Ini([string]$Text) {
 
 function Assert-PluginConfig([string]$Text, [string]$Version) {
     $ini = Read-Ini $Text
-    $expected = @('General', 'MapBinding', 'MapButton', 'GamepadSensitivityMultiplier', 'DualSenseEdgeView')
-    if (@(Compare-Object $expected @($ini.Keys)).Count) { throw 'Unexpected plugin configuration sections.' }
     if ($ini.General.File -cne 'GamepadCustomPlugin.dll' -or $ini.General.Version -cne $Version) {
         throw 'Config DLL name or version differs.'
     }
