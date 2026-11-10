@@ -24,6 +24,8 @@
 #include "DualSenseIdentity.h"
 #include "DualSenseState.h"
 #include "GameBuild.h"
+#include "HotSwitch.h"
+#include "DeviceActivity.h"
 
 namespace {
     HMODULE g_Module = nullptr;
@@ -39,6 +41,7 @@ namespace {
     ButtonRouter g_XInputRouter;
     struct DualSenseController {
         ButtonRouter router;
+        GamepadActivity activity;
         DualSenseController() { router.Rebind(); }
     };
     std::unordered_map<void*, DualSenseController> g_DualSenseControllers; // Existing input mutex held.
@@ -60,11 +63,12 @@ namespace {
         if (NativePages::RequestActivation()) SetEvent(g_ModuleEvent);
     }
     bool InputWanted() {
-        return g_MapEnabled.load(std::memory_order_relaxed) || g_Diagnostics;
+        return g_MapEnabled.load(std::memory_order_relaxed) || g_Diagnostics || HotSwitch::IsEnabled();
     }
     bool ProcessDualSense(void* device, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
         auto& controller = g_DualSenseControllers.try_emplace(device).first->second;
+        if (HotSwitch::IsEnabled() && controller.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
         const bool captured = controller.router.Sample(0, g_MapButton.IsDown(pad),
             (enabled || g_Diagnostics) && (!enabled || g_MapButton.CanStart(pad, DualSenseTouchpadMask)),
@@ -79,6 +83,7 @@ namespace {
     bool ProcessDualSenseHid(void* device, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
         auto& controller = g_DualSenseHidControllers.try_emplace(device).first->second;
+        if (HotSwitch::IsEnabled() && controller.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
         const bool captured = controller.router.Sample(0, g_MapButton.IsDown(pad),
             (enabled || g_Diagnostics) && (!enabled || g_MapButton.CanStart(pad, DualSenseTouchpadMask)),
@@ -110,6 +115,7 @@ namespace {
 
     void ProcessXInput(unsigned controller, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
+        HotSwitch::ObserveXInput(controller, pad);
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
         const bool down = !g_MapButton.IsNativeOnly() && g_MapButton.IsDown(pad);
         const bool canStart = !enabled || g_MapButton.CanStart(pad);
@@ -120,10 +126,17 @@ namespace {
     void DisconnectXInput(unsigned controller) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
         g_XInputRouter.Disconnect(controller);
+        HotSwitch::DisconnectXInput(controller);
+    }
+    void ObserveXInputActivity(unsigned controller, const XINPUT_GAMEPAD* pad) {
+        std::lock_guard<std::mutex> lock(g_InputMutex);
+        if (pad) HotSwitch::ObserveXInput(controller, *pad);
+        else HotSwitch::DisconnectXInput(controller);
     }
 
     void InstallAvailableBackends() {
         NativePages::Prepare(); NativePages::Install();
+        if (NativePages::IsReady()) HotSwitch::Install();
         XInputBackend::Install();
         DualSenseHidBackend::Install();
         // Sony identity view. Installed after the HID adapter so that adapter
@@ -163,6 +176,7 @@ namespace {
         g_LogEnabled = GetPrivateProfileIntW(L"DebugLog", L"Value", 0, config.c_str()) != 0;
         g_Diagnostics = GetPrivateProfileIntW(L"InputDiagnostics", L"Value", 0, config.c_str()) != 0;
         g_EdgeView = GetPrivateProfileIntW(L"DualSenseEdgeView", L"Value", 1, config.c_str()) != 0;
+        const bool hotSwitch = GetPrivateProfileIntW(L"GlobalInputSwitch", L"Value", 0, config.c_str()) != 0;
         ConfigWatcher watcher;
         const bool watching = watcher.Start(g_Directory);
         LiveSettings current, initial;
@@ -170,14 +184,15 @@ namespace {
             Log("Initial config unreadable/invalid; live features remain disabled until a valid save");
         Sensitivity::Configure(Log, initial.sensitivity, g_Diagnostics);
         ApplyLiveSettings(initial, current);
+        HotSwitch::Configure(Log, hotSwitch, g_Diagnostics);
         XInputBackend::Configure(Log, InputWanted, InputObserved, ProcessXInput,
-            DisconnectXInput);
+            DisconnectXInput, ObserveXInputActivity);
         DualSenseBackend::Configure(Log, InputWanted, InputObserved, ProcessDualSense, DisconnectDualSense);
         DualSenseHidBackend::Configure(Log, InputWanted, InputObserved, ProcessDualSenseHid, DisconnectDualSenseHid);
         DualSenseIdentity::Configure(Log, g_EdgeView);
         // Keep the verified map route available for later live enabling. Resolve
         // it once; changing config never repeats native map signature searches.
-        NativePages::Configure(Log, true, g_Diagnostics, true, g_Directory.c_str());
+        NativePages::Configure(Log, true, g_Diagnostics, hotSwitch, true, g_Directory.c_str());
         GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
         const auto executable = std::filesystem::path(path).filename().wstring();
         if (_wcsicmp(executable.c_str(), L"YuanShen.exe") &&
@@ -189,7 +204,8 @@ namespace {
             Log("Unsupported game build; CN 7.2 fingerprint required, plugin left inactive");
             return 0;
         }
-        Log("GamepadCustomPlugin 1.1.0 started; map binding and camera sensitivity; diagnostics opt-in");
+        Log(hotSwitch ? "GamepadCustomPlugin 1.1.1 started; global input hot switch enabled" :
+            "GamepadCustomPlugin 1.1.1 started; map binding and camera sensitivity; diagnostics opt-in");
         if (!watching) Log("Config notifications unavailable; settings require game restart (no polling fallback)");
         if (MH_Initialize() != MH_OK) {
             Log("MinHook initialization failed; input unchanged");
@@ -208,10 +224,11 @@ namespace {
         }
         HANDLE events[] = {g_ModuleEvent, watcher.Event()};
         ULONGLONG reloadAfter = 0;
-        // Block while idle. Only a config event starts a 100 ms save-settling
-        // delay; input processing runs only when the game reads its controllers.
+        // When experimentally enabled, sample a hooked XInput backend every 50 ms
+        // because the game might stop reading controllers in keyboard mode.
+        // Otherwise use the original event-driven idle behavior.
         for (;;) {
-            DWORD timeout = INFINITE;
+            DWORD timeout = HotSwitch::IsEnabled() ? 50 : INFINITE;
             if (reloadAfter) {
                 const auto now = GetTickCount64();
                 timeout = (std::min)(timeout, static_cast<DWORD>(now < reloadAfter ? reloadAfter - now : 0));
@@ -231,6 +248,11 @@ namespace {
                     InstallAvailableBackends();
                     Log("Map switch/button and sensitivity reloaded; startup-only options unchanged");
                 }
+            }
+            if (HotSwitch::IsEnabled()) {
+                NativePages::Install();
+                if (NativePages::IsReady()) HotSwitch::Install();
+                if (HotSwitch::IsReady()) XInputBackend::PollActivity();
             }
         }
         return 0;
