@@ -17,7 +17,7 @@ inline bool IsRawMouseActivity(const RAWMOUSE& mouse) {
 }
 
 // Producers only report real activity. The game thread consumes the newest
-// token; controller connection, idle polling and releases are not activity.
+// token; gamepad connection, idle polling and releases are not activity.
 class DeviceActivity {
 public:
     void Notify(InputSource source, std::uint64_t now) {

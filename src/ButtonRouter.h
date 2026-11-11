@@ -7,10 +7,10 @@ class ButtonRouter {
 public:
     using RequestAction = bool (*)(void* context);
 
-    bool Sample(std::size_t controller, bool down, bool enabled,
+    bool Sample(std::size_t gamepadIndex, bool down, bool enabled,
         RequestAction request, void* context) {
-        if (controller >= states_.size()) return false;
-        auto& state = states_[controller];
+        if (gamepadIndex >= states_.size()) return false;
+        auto& state = states_[gamepadIndex];
         if (!down) {
             state = {};
             return false;
@@ -25,8 +25,8 @@ public:
         return state.captured;
     }
 
-    void Disconnect(std::size_t controller) {
-        if (controller < states_.size()) states_[controller] = {};
+    void Disconnect(std::size_t gamepadIndex) {
+        if (gamepadIndex < states_.size()) states_[gamepadIndex] = {};
     }
 
     void Rebind() {

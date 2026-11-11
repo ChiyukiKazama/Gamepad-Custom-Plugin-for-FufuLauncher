@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdint>
 #include "MinHook.h"
+#include "GameBuild.h"
 #include "Sensitivity.h"
 #include "SensitivityFactor.h"
 
@@ -16,12 +17,20 @@ namespace {
         "56 57 55 53 48 83 EC 48 0F 29 74 24 30 44 89 C5 89 D3 48 89 CF "
         "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
         "48 8B 47 50 48 85 C0 74 ? 8B 8F AC 01 00 00 83 F9 03";
+    constexpr const char* OsSensitivitySignature =
+        "56 57 55 53 48 83 EC 48 0F 29 74 24 30 44 89 C5 89 D3 48 89 CF "
+        "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
+        "48 8B 87 D8 00 00 00 48 85 C0 74 ? 8B 8F 58 01 00 00 83 F9 03";
     // This separate native path serializes settings. Its getter calls must
     // receive unmodified values, not the effective in-game multiplier.
     constexpr const char* SaveSettingsSignature =
         "56 57 48 83 EC 28 48 89 CE 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
         "48 8B 7E 50 E8 ? ? ? ? 48 85 FF 0F 84 ? ? ? ? 48 89 47 10 "
         "48 8B 7E 50 48 85 FF 0F 84 ? ? ? ? 8B 86 ? ? ? ? 89 47 1C";
+    constexpr const char* OsSaveSettingsSignature =
+        "56 57 48 83 EC 28 48 89 CE 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
+        "48 8B BE D8 00 00 00 E8 ? ? ? ? 48 85 FF 0F 84 ? ? ? ? 48 89 47 10 "
+        "48 8B BE D8 00 00 00 48 85 FF 0F 84 ? ? ? ? 8B 86 ? ? ? ? 89 47 1C";
     using GetSensitivity = float (WINAPI*)(void*, bool, bool, void*);
     GetSensitivity g_Original = nullptr;
     void* g_Entry = nullptr;
@@ -70,11 +79,12 @@ void Sensitivity::SetFactor(float factor) {
     g_Factor.store(ValidSensitivityFactor(factor) ? factor : 1.0f, std::memory_order_relaxed);
 }
 
-void Sensitivity::Prepare(Resolver find) {
+void Sensitivity::Prepare(Resolver find, const GameBuild::Profile& build) {
     if (g_Factor.load(std::memory_order_relaxed) == 1.0f || g_PrepareAttempted) return;
     g_PrepareAttempted = true;
-    const auto entry = static_cast<const unsigned char*>(find(SensitivitySignature));
-    const auto save = static_cast<const unsigned char*>(find(SaveSettingsSignature));
+    const bool overseas = build.region == GameBuild::Region::OS;
+    const auto entry = static_cast<const unsigned char*>(find(overseas ? OsSensitivitySignature : SensitivitySignature));
+    const auto save = static_cast<const unsigned char*>(find(overseas ? OsSaveSettingsSignature : SaveSettingsSignature));
     DWORD64 base = 0;
     const auto function = save ? RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(save), &base, nullptr) : nullptr;
     if (!entry || !function || base + function->BeginAddress != reinterpret_cast<DWORD64>(save) ||
@@ -82,19 +92,25 @@ void Sensitivity::Prepare(Resolver find) {
         Log("Camera sensitivity signatures/function boundary absent or ambiguous; disabled, no fallback");
         return;
     }
-    const unsigned mode = *reinterpret_cast<const unsigned*>(entry + 0x3A);
+    const unsigned mode = *reinterpret_cast<const unsigned*>(entry + (overseas ? 0x3D : 0x3A));
+    const auto saveMode = save + (overseas ? 0xD6 : 0xD0);
     // Cross-check the mode field against the settings serialization branch.
-    if (mode != 0x1AC || save[0xD0] != 0x8B || save[0xD1] != 0x86 ||
-        *reinterpret_cast<const unsigned*>(save + 0xD2) != mode) {
+    if (mode != build.inputModeOffset || saveMode[0] != 0x8B || saveMode[1] != 0x86 ||
+        *reinterpret_cast<const unsigned*>(saveMode + 2) != mode) {
         Log("Camera sensitivity mode field cross-check failed; disabled");
         return;
     }
-    // CN 7.2 serializes all three input modes through twelve direct getter
+    // Both builds serialize all three input modes through twelve direct getter
     // calls. Verify the complete save path before applying any multiplier.
-    constexpr unsigned getterCalls[] = {
+    constexpr unsigned cnGetterCalls[] = {
         0xEC, 0x102, 0x121, 0x143, 0x15E, 0x174,
         0x193, 0x1B2, 0x209, 0x21F, 0x23E, 0x260
     };
+    constexpr unsigned osGetterCalls[] = {
+        0xF6, 0x10F, 0x131, 0x156, 0x171, 0x18A,
+        0x1AC, 0x1CE, 0x228, 0x241, 0x263, 0x288
+    };
+    const auto& getterCalls = overseas ? osGetterCalls : cnGetterCalls;
     for (const auto offset : getterCalls) {
         const auto call = save + offset;
         if (reinterpret_cast<DWORD64>(call + 5) > base + function->EndAddress ||

@@ -25,6 +25,7 @@
 #include "DualSenseState.h"
 #include "GameBuild.h"
 #include "HotSwitch.h"
+#include "GamepadLayout.h"
 #include "DeviceActivity.h"
 
 namespace {
@@ -39,13 +40,13 @@ namespace {
     std::mutex g_LogMutex;
     std::mutex g_InputMutex;
     ButtonRouter g_XInputRouter;
-    struct DualSenseController {
+    struct DualSenseGamepad {
         ButtonRouter router;
         GamepadActivity activity;
-        DualSenseController() { router.Rebind(); }
+        DualSenseGamepad() { router.Rebind(); }
     };
-    std::unordered_map<void*, DualSenseController> g_DualSenseControllers; // Existing input mutex held.
-    std::unordered_map<void*, DualSenseController> g_DualSenseHidControllers;
+    std::unordered_map<void*, DualSenseGamepad> g_DualSenseGamepads; // Existing input mutex held.
+    std::unordered_map<void*, DualSenseGamepad> g_DualSenseHidGamepads;
     static_assert(GamepadButton::TouchpadMask == DualSenseTouchpadMask);
 
     void Log(const char* message) {
@@ -67,33 +68,33 @@ namespace {
     }
     bool ProcessDualSense(void* device, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        auto& controller = g_DualSenseControllers.try_emplace(device).first->second;
-        if (HotSwitch::IsEnabled() && controller.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
+        auto& gamepad = g_DualSenseGamepads.try_emplace(device).first->second;
+        if (HotSwitch::IsEnabled() && gamepad.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
-        const bool captured = controller.router.Sample(0, g_MapButton.IsDown(pad),
+        const bool captured = gamepad.router.Sample(0, g_MapButton.IsDown(pad),
             (enabled || g_Diagnostics) && (!enabled || g_MapButton.CanStart(pad, DualSenseTouchpadMask)),
-            RequestMap, &controller);
+            RequestMap, &gamepad);
         if (captured) g_MapButton.EmitCarrier(pad, DualSenseTouchpadMask);
         return captured;
     }
     void DisconnectDualSense(void* device) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        g_DualSenseControllers.erase(device);
+        g_DualSenseGamepads.erase(device);
     }
     bool ProcessDualSenseHid(void* device, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        auto& controller = g_DualSenseHidControllers.try_emplace(device).first->second;
-        if (HotSwitch::IsEnabled() && controller.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
+        auto& gamepad = g_DualSenseHidGamepads.try_emplace(device).first->second;
+        if (HotSwitch::IsEnabled() && gamepad.activity.Sample(0, pad)) HotSwitch::NotifyGamepadActivity();
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
-        const bool captured = controller.router.Sample(0, g_MapButton.IsDown(pad),
+        const bool captured = gamepad.router.Sample(0, g_MapButton.IsDown(pad),
             (enabled || g_Diagnostics) && (!enabled || g_MapButton.CanStart(pad, DualSenseTouchpadMask)),
-            RequestMap, &controller);
+            RequestMap, &gamepad);
         if (captured) g_MapButton.EmitCarrier(pad, DualSenseTouchpadMask);
         return captured;
     }
     void DisconnectDualSenseHid(void* device) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        g_DualSenseHidControllers.erase(device);
+        g_DualSenseHidGamepads.erase(device);
     }
 
     bool ApplyLiveSettings(const LiveSettings& next, LiveSettings& current) {
@@ -104,8 +105,8 @@ namespace {
             g_MapEnabled.store(next.mapEnabled && next.mapButton.IsValid(), std::memory_order_relaxed);
             g_MapButton = next.mapButton;
             g_XInputRouter.Rebind();
-            for (auto& controller : g_DualSenseControllers) controller.second.router.Rebind();
-            for (auto& controller : g_DualSenseHidControllers) controller.second.router.Rebind();
+            for (auto& gamepad : g_DualSenseGamepads) gamepad.second.router.Rebind();
+            for (auto& gamepad : g_DualSenseHidGamepads) gamepad.second.router.Rebind();
             NativePages::CancelMapRequest();
         }
         if (factorChanged) Sensitivity::SetFactor(next.sensitivity);
@@ -113,25 +114,25 @@ namespace {
         return rebind || factorChanged;
     }
 
-    void ProcessXInput(unsigned controller, XINPUT_GAMEPAD& pad) {
+    void ProcessXInput(unsigned gamepadIndex, XINPUT_GAMEPAD& pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        HotSwitch::ObserveXInput(controller, pad);
+        HotSwitch::ObserveXInput(gamepadIndex, pad);
         const bool enabled = g_MapEnabled.load(std::memory_order_relaxed);
         const bool down = !g_MapButton.IsNativeOnly() && g_MapButton.IsDown(pad);
         const bool canStart = !enabled || g_MapButton.CanStart(pad);
-        const bool captured = g_XInputRouter.Sample(controller, down,
+        const bool captured = g_XInputRouter.Sample(gamepadIndex, down,
             (enabled || g_Diagnostics) && canStart, RequestMap, nullptr);
         if (captured) g_MapButton.EmitCarrier(pad);
     }
-    void DisconnectXInput(unsigned controller) {
+    void DisconnectXInput(unsigned gamepadIndex) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        g_XInputRouter.Disconnect(controller);
-        HotSwitch::DisconnectXInput(controller);
+        g_XInputRouter.Disconnect(gamepadIndex);
+        HotSwitch::DisconnectXInput(gamepadIndex);
     }
-    void ObserveXInputActivity(unsigned controller, const XINPUT_GAMEPAD* pad) {
+    void ObserveXInputActivity(unsigned gamepadIndex, const XINPUT_GAMEPAD* pad) {
         std::lock_guard<std::mutex> lock(g_InputMutex);
-        if (pad) HotSwitch::ObserveXInput(controller, *pad);
-        else HotSwitch::DisconnectXInput(controller);
+        if (pad) HotSwitch::ObserveXInput(gamepadIndex, *pad);
+        else HotSwitch::DisconnectXInput(gamepadIndex);
     }
 
     void InstallAvailableBackends() {
@@ -177,6 +178,7 @@ namespace {
         g_Diagnostics = GetPrivateProfileIntW(L"InputDiagnostics", L"Value", 0, config.c_str()) != 0;
         g_EdgeView = GetPrivateProfileIntW(L"DualSenseEdgeView", L"Value", 1, config.c_str()) != 0;
         const bool hotSwitch = GetPrivateProfileIntW(L"GlobalInputSwitch", L"Value", 0, config.c_str()) != 0;
+        const bool gamepadUseKeyboardScale = GetPrivateProfileIntW(L"GamepadUseKeyboardScale", L"Value", 0, config.c_str()) != 0;
         ConfigWatcher watcher;
         const bool watching = watcher.Start(g_Directory);
         LiveSettings current, initial;
@@ -192,7 +194,6 @@ namespace {
         DualSenseIdentity::Configure(Log, g_EdgeView);
         // Keep the verified map route available for later live enabling. Resolve
         // it once; changing config never repeats native map signature searches.
-        NativePages::Configure(Log, true, g_Diagnostics, hotSwitch, true, g_Directory.c_str());
         GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
         const auto executable = std::filesystem::path(path).filename().wstring();
         if (_wcsicmp(executable.c_str(), L"YuanShen.exe") &&
@@ -200,10 +201,12 @@ namespace {
             Log("Unsupported process; plugin left inactive");
             return 0;
         }
-        if (!GameBuild::SupportedImage(GetModuleHandleW(nullptr))) {
-            Log("Unsupported game build; CN 7.2 fingerprint required, plugin left inactive");
+        const auto* build = GameBuild::Match(executable.c_str(), GetModuleHandleW(nullptr));
+        if (!build) {
+            Log("Unsupported game build; verified CN/OS 7.2 fingerprint required");
             return 0;
         }
+        NativePages::Configure(Log, true, g_Diagnostics, hotSwitch, true, g_Directory.c_str(), *build);
         Log(hotSwitch ? "GamepadCustomPlugin 1.1.1 started; global input hot switch enabled" :
             "GamepadCustomPlugin 1.1.1 started; map binding and camera sensitivity; diagnostics opt-in");
         if (!watching) Log("Config notifications unavailable; settings require game restart (no polling fallback)");
@@ -211,6 +214,7 @@ namespace {
             Log("MinHook initialization failed; input unchanged");
             return 0;
         }
+        if (gamepadUseKeyboardScale) GamepadLayout::Install(Log, *build);
         g_ModuleEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!g_ModuleEvent) return 0;
         auto registerNotification = reinterpret_cast<RegisterNotification>(
@@ -225,7 +229,7 @@ namespace {
         HANDLE events[] = {g_ModuleEvent, watcher.Event()};
         ULONGLONG reloadAfter = 0;
         // When experimentally enabled, sample a hooked XInput backend every 50 ms
-        // because the game might stop reading controllers in keyboard mode.
+        // because the game might stop reading gamepads in keyboard mode.
         // Otherwise use the original event-driven idle behavior.
         for (;;) {
             DWORD timeout = HotSwitch::IsEnabled() ? 50 : INFINITE;

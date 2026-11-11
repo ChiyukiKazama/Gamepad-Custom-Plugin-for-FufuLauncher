@@ -30,12 +30,12 @@ namespace {
     void Log(const char* text) { if (g_Log) g_Log(text); }
 
     template<std::size_t Index>
-    DWORD WINAPI HookGetState(DWORD controller, XINPUT_STATE* state) {
+    DWORD WINAPI HookGetState(DWORD gamepadIndex, XINPUT_STATE* state) {
         auto& backend = g_Backends[Index];
         ++g_InputDepth;
-        const DWORD result = backend.original(controller, state);
+        const DWORD result = backend.original(gamepadIndex, state);
         const bool outermost = --g_InputDepth == 0;
-        if (!outermost || controller >= 4) return result;
+        if (!outermost || gamepadIndex >= 4) return result;
         if (g_Observed) g_Observed();
         if (!backend.observed.exchange(true, std::memory_order_relaxed)) {
             Log(Index == 0 ? "Game reads XInput 1.3" :
@@ -43,9 +43,9 @@ namespace {
         }
         if (!g_Wanted || !g_Wanted()) return result;
         if (result != ERROR_SUCCESS) {
-            if (g_Disconnect) g_Disconnect(controller);
+            if (g_Disconnect) g_Disconnect(gamepadIndex);
         } else if (state && g_Process) {
-            g_Process(controller, state->Gamepad);
+            g_Process(gamepadIndex, state->Gamepad);
         }
         return result;
     }
@@ -104,18 +104,18 @@ void XInputBackend::Install() {
 }
 
 void XInputBackend::PollActivity() {
-    // Keyboard mode may stop game-driven controller reads. Reuse one installed backend.
+    // The game may stop polling gamepads in keyboard mode. Reuse one installed backend.
     if (!g_Activity) return;
     GetState read = nullptr;
     for (const auto& backend : g_Backends) {
         if (backend.original) { read = backend.original; break; }
     }
     if (!read) return;
-    for (unsigned controller = 0; controller < 4; ++controller) {
+    for (unsigned gamepadIndex = 0; gamepadIndex < 4; ++gamepadIndex) {
         XINPUT_STATE state{};
         ++g_InputDepth; // Polling must not be mistaken for game input.
-        const DWORD result = read(controller, &state);
+        const DWORD result = read(gamepadIndex, &state);
         --g_InputDepth;
-        g_Activity(controller, result == ERROR_SUCCESS ? &state.Gamepad : nullptr);
+        g_Activity(gamepadIndex, result == ERROR_SUCCESS ? &state.Gamepad : nullptr);
     }
 }

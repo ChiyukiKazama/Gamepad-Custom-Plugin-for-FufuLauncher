@@ -59,6 +59,7 @@ namespace {
     bool g_MainWaitLogged = false;
     NativePages::Logger g_Log = nullptr;
     bool g_MapBinding = false, g_Diagnostics = false, g_HotSwitch = false, g_Sensitivity = false, g_PrepareAttempted = false;
+    const GameBuild::Profile* g_Build = nullptr;
     std::atomic<bool> g_Prepared{ false }, g_ActivationQueued{ false };
     std::atomic<bool> g_InstallAttempted{ false }, g_Ready{ false };
     // Diagnostic capture is armed by a button edge, not during game loading.
@@ -253,7 +254,9 @@ namespace {
     }
 }
 
-void NativePages::Configure(Logger log, bool mapBinding, bool diagnostics, bool hotSwitch, bool sensitivity, const wchar_t* pluginDirectory) {
+void NativePages::Configure(Logger log, bool mapBinding, bool diagnostics, bool hotSwitch, bool sensitivity,
+    const wchar_t* pluginDirectory, const GameBuild::Profile& build) {
+    g_Build = &build;
     g_Log = log;
     g_Diagnostics = diagnostics;
     g_MapBinding = mapBinding;
@@ -303,7 +306,7 @@ void NativePages::Prepare() {
     const auto gameNt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(game + gameDos->e_lfanew);
     g_GameBegin = reinterpret_cast<std::uintptr_t>(game);
     g_GameEnd = g_GameBegin + gameNt->OptionalHeader.SizeOfImage;
-    // CN 7.2 keeps both signatures and the 32-byte event ABI. Require unique
+    // Both 7.2 builds use these signatures and the 32-byte event ABI. Require unique
     // matches; InnerDispatcher is not on this native input route.
     if (g_MapBinding || g_Diagnostics) g_PageEntry = FindEntry(Signature(InputDispatchSignature));
     if (g_MapBinding) {
@@ -320,7 +323,7 @@ void NativePages::Prepare() {
             g_MapBinding = false;
         }
     }
-    g_SetActiveEntry = game + GameBuild::SetActiveRva;
+    g_SetActiveEntry = game + g_Build->setActiveRva;
     // Both bodies are checked before hooking. SetActive's first six bytes may
     // already contain the main plugin's detour; the remaining body is unchanged.
     unsigned char activationCode[64]{};
@@ -352,9 +355,9 @@ void NativePages::Prepare() {
         static_cast<unsigned long long>(g_PageEntry ? reinterpret_cast<std::uintptr_t>(g_PageEntry) - base : 0),
         static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_SetActiveEntry) - base));
     Log(text);
-    if (g_HotSwitch) HotSwitch::Prepare(FindNative);
-    if (g_Sensitivity) Sensitivity::Prepare(FindNative);
-    DualSenseBackend::Prepare(FindNative);
+    if (g_HotSwitch) HotSwitch::Prepare(FindNative, *g_Build);
+    if (g_Sensitivity) Sensitivity::Prepare(FindNative, *g_Build);
+    DualSenseBackend::Prepare(FindNative, *g_Build);
     g_Prepared.store(true, std::memory_order_release);
 }
 
@@ -376,7 +379,7 @@ void NativePages::Install() {
     if (!MainHooksActive()) return;
     // A neutral startup coefficient needs no sensitivity hook. The first live
     // non-neutral value resolves/installs it once, after the main plugin is ready.
-    if (g_Sensitivity) { Sensitivity::Prepare(FindNative); Sensitivity::Install(); }
+    if (g_Sensitivity) { Sensitivity::Prepare(FindNative, *g_Build); Sensitivity::Install(); }
     if (g_InstallAttempted.exchange(true, std::memory_order_relaxed)) return;
     if (!g_MapBinding && !g_Diagnostics) {
         g_Ready.store(true, std::memory_order_release);

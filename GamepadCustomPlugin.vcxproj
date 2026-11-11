@@ -49,6 +49,7 @@
   <ItemGroup>
     <ClCompile Include="src\Plugin.cpp" />
     <ClCompile Include="src\HotSwitch.cpp" />
+    <ClCompile Include="src\GamepadLayout.cpp" />
     <ClCompile Include="src\NativePages.cpp" />
     <ClCompile Include="src\Sensitivity.cpp" />
     <ClCompile Include="src\LiveConfig.cpp" />
@@ -66,6 +67,7 @@
     <ClInclude Include="src\GameBuild.h" />
     <ClInclude Include="src\GamepadButton.h" />
     <ClInclude Include="src\HotSwitch.h" />
+    <ClInclude Include="src\GamepadLayout.h" />
     <ClInclude Include="src\DeviceActivity.h" />
     <ClInclude Include="src\DualSenseBackend.h" />
     <ClInclude Include="src\DualSenseHidBackend.h" />

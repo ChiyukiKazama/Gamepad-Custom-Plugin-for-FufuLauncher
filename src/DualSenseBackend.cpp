@@ -10,23 +10,26 @@
 #include "MinHook.h"
 #include "DualSenseBackend.h"
 #include "DualSenseState.h"
+#include "GameBuild.h"
 
 namespace {
-    // Rewired_Windows.dll layout from the CN 7.2 dump and parser bodies.
-    namespace Layout {
-        constexpr std::size_t Buttons = 0x48, Axes = 0x30, Hats = 0x20;
-        constexpr std::size_t Disposed = 0x50, Report = 0xC0, Bluetooth = 0x163;
-        constexpr std::size_t ButtonValue = 0x20, ButtonTime = 0x28;
-        constexpr std::size_t AxisValue = 0x20, AxisTime = 0x40;
-        constexpr std::size_t HatValue = 0x3C, HatTime = 0x30;
-    }
+    // Rewired driver and element fields verified in the 7.2 native parser,
+    // constructor, element update routines and dispose/transport path.
+    struct DriverLayout {
+        unsigned buttons, axes, hats, report, bluetooth;
+        unsigned axisValue, hatValue, hatTime;
+    };
+    constexpr DriverLayout CnLayout{ 0x48, 0x30, 0x20, 0xC0, 0x163, 0x20, 0x3C, 0x30 };
+    constexpr DriverLayout OsLayout{ 0x38, 0x20, 0x40, 0x80, 0x169, 0x28, 0x34, 0x38 };
+    constexpr unsigned Disposed = 0x50, ButtonValue = 0x20, ButtonTime = 0x28, AxisTime = 0x40;
+    const DriverLayout* g_Layout = nullptr;
     constexpr const char* ParseSignature =
         "41 57 41 56 56 57 53 48 83 EC 40 0F 29 74 24 30 66 0F 28 F3 "
         "44 89 C7 48 89 D3 49 89 CF 80 3D ? ? ? ? 00 0F 84 ? ? ? ? "
-        "48 85 DB 74 ? 49 8B 8F C0 00 00 00 48 85 C9 0F 84 ? ? ? ? "
+        "48 85 DB 74 ? 49 8B 8F ? ? ? ? 48 85 C9 0F 84 ? ? ? ? "
         "44 8B 49 14 41 39 F9 7E ? 31 C0 E9 ? ? ? ? 66 0F 28 C6 "
-        "F2 41 0F 5C 87 C8 00 00 00 F2 0F 5A C0 F3 41 0F 11 87 48 01 00 00 "
-        "F2 41 0F 11 B7 C8 00 00 00 C7 44 24 28 00 00 00 00 C7 44 24 20 00 00 00 00 "
+        "F2 41 0F 5C 87 ? ? ? ? F2 0F 5A C0 F3 41 0F 11 87 ? ? ? ? "
+        "F2 41 0F 11 B7 ? ? ? ? C7 44 24 28 00 00 00 00 C7 44 24 20 00 00 00 00 "
         "48 89 DA 41 89 F8 E8 ? ? ? ?";
     constexpr const char* DisposeSignature =
         "55 56 57 53 48 83 EC 48 48 8D 6C 24 40 48 C7 45 00 FE FF FF FF "
@@ -37,6 +40,15 @@ namespace {
         "48 63 CB 48 8B 44 C8 20 48 85 C0 0F 84 ? ? ? ? C7 40 18 00 00 00 00 "
         "48 8B 40 10 48 85 C0 74 ? 48 8B 50 28 48 8B 48 40 FF 50 18 EB ? "
         "80 BE 45 01 00 00 00";
+    constexpr const char* OsDisposeSignature =
+        "55 56 57 53 48 83 EC 48 48 8D 6C 24 40 48 C7 45 00 FE FF FF FF "
+        "80 79 50 00 0F 85 ? ? ? ? 48 89 CE C6 41 50 01 84 D2 0F 84 ? ? ? ? "
+        "48 8B 46 28 48 85 C0 74 ? 8B 78 18 85 FF 7E ? 31 DB EB ? "
+        "66 66 66 66 66 2E 0F 1F 84 00 00 00 00 00 FF C3 39 DF 74 ? "
+        "48 8B 46 28 48 85 C0 0F 84 ? ? ? ? 3B 58 18 0F 83 ? ? ? ? "
+        "48 63 CB 48 8B 44 C8 20 48 85 C0 0F 84 ? ? ? ? C7 40 20 00 00 00 00 "
+        "48 8B 40 10 48 85 C0 74 ? 48 8B 50 28 48 8B 48 40 FF 50 18 EB ? "
+        "80 BE DB 00 00 00 00";
     using Parse = bool (WINAPI*)(void*, const void*, int, double, void*);
     using Dispose = void (WINAPI*)(void*, bool, void*);
     Parse g_OriginalParse = nullptr;
@@ -59,56 +71,56 @@ namespace {
     }
     bool ReadState(void* driver, DualSenseState& state, bool& bluetooth) {
         __try {
-            if (!driver || Field<unsigned char>(driver, Layout::Disposed)) return false;
-            const auto buttons = Field<void*>(driver, Layout::Buttons);
-            const auto axes = Field<void*>(driver, Layout::Axes);
-            const auto hats = Field<void*>(driver, Layout::Hats);
-            const auto report = Field<void*>(driver, Layout::Report);
+            if (!driver || Field<unsigned char>(driver, Disposed)) return false;
+            const auto buttons = Field<void*>(driver, g_Layout->buttons);
+            const auto axes = Field<void*>(driver, g_Layout->axes);
+            const auto hats = Field<void*>(driver, g_Layout->hats);
+            const auto report = Field<void*>(driver, g_Layout->report);
             if (!buttons || !axes || !hats || !report ||
                 Field<std::size_t>(buttons, 0x18) != state.buttons.size() ||
                 Field<std::size_t>(axes, 0x18) != state.axes.size() ||
                 Field<std::size_t>(hats, 0x18) != 1 || Field<int>(report, 0x14) != 64) return false;
             const auto bytes = Field<const unsigned char*>(report, 0x18);
-            bluetooth = Field<unsigned char>(driver, Layout::Bluetooth) != 0;
+            bluetooth = Field<unsigned char>(driver, g_Layout->bluetooth) != 0;
             if (!bytes || bytes[0] != (bluetooth ? 0x31 : 0x01)) return false;
             for (std::size_t index = 0; index < state.buttons.size(); ++index) {
                 const auto element = Field<void*>(buttons, 0x20 + index * sizeof(void*));
-                if (!element || Field<unsigned char>(element, Layout::ButtonValue) > 1) return false;
-                state.buttons[index] = Field<unsigned char>(element, Layout::ButtonValue) != 0;
+                if (!element || Field<unsigned char>(element, ButtonValue) > 1) return false;
+                state.buttons[index] = Field<unsigned char>(element, ButtonValue) != 0;
             }
             for (std::size_t index = 0; index < state.axes.size(); ++index) {
                 const auto element = Field<void*>(axes, 0x20 + index * sizeof(void*));
                 if (!element) return false;
-                state.axes[index] = Field<int>(element, Layout::AxisValue);
+                state.axes[index] = Field<int>(element, g_Layout->axisValue);
             }
             const auto hat = Field<void*>(hats, 0x20);
             if (!hat) return false;
-            state.hat = Field<int>(hat, Layout::HatValue);
+            state.hat = Field<int>(hat, g_Layout->hatValue);
             return state.IsValid();
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     bool WriteChanges(void* driver, const DualSenseState& before, const DualSenseState& after, double time) {
         __try {
-            const auto buttons = Field<void*>(driver, Layout::Buttons);
-            const auto axes = Field<void*>(driver, Layout::Axes);
+            const auto buttons = Field<void*>(driver, g_Layout->buttons);
+            const auto axes = Field<void*>(driver, g_Layout->axes);
             for (std::size_t index = 0; index < after.buttons.size(); ++index) {
                 if (before.buttons[index] == after.buttons[index]) continue;
                 const auto element = Field<void*>(buttons, 0x20 + index * sizeof(void*));
-                Field<unsigned char>(element, Layout::ButtonValue) = after.buttons[index] ? 1 : 0;
-                Field<double>(element, Layout::ButtonTime) = time;
+                Field<unsigned char>(element, ButtonValue) = after.buttons[index] ? 1 : 0;
+                Field<double>(element, ButtonTime) = time;
             }
             for (std::size_t index = 4; index < after.axes.size(); ++index) {
                 if (before.axes[index] == after.axes[index]) continue;
                 const auto element = Field<void*>(axes, 0x20 + index * sizeof(void*));
-                Field<int>(element, Layout::AxisValue) = after.axes[index];
-                Field<double>(element, Layout::AxisTime) = time;
+                Field<int>(element, g_Layout->axisValue) = after.axes[index];
+                Field<double>(element, AxisTime) = time;
             }
             if (before.hat != after.hat) {
-                const auto hats = Field<void*>(driver, Layout::Hats);
+                const auto hats = Field<void*>(driver, g_Layout->hats);
                 const auto element = Field<void*>(hats, 0x20);
-                Field<int>(element, Layout::HatValue) = after.hat;
-                Field<double>(element, Layout::HatTime) = time;
+                Field<int>(element, g_Layout->hatValue) = after.hat;
+                Field<double>(element, g_Layout->hatTime) = time;
             }
             return true;
         }
@@ -120,10 +132,10 @@ namespace {
         int reportLength = 0;
         __try {
             if (driver) {
-                const auto buttonArray = Field<void*>(driver, Layout::Buttons);
-                const auto axisArray = Field<void*>(driver, Layout::Axes);
-                const auto hatArray = Field<void*>(driver, Layout::Hats);
-                const auto report = Field<void*>(driver, Layout::Report);
+                const auto buttonArray = Field<void*>(driver, g_Layout->buttons);
+                const auto axisArray = Field<void*>(driver, g_Layout->axes);
+                const auto hatArray = Field<void*>(driver, g_Layout->hats);
+                const auto report = Field<void*>(driver, g_Layout->report);
                 if (buttonArray) buttons = Field<std::size_t>(buttonArray, 0x18);
                 if (axisArray) axes = Field<std::size_t>(axisArray, 0x18);
                 if (hatArray) hats = Field<std::size_t>(hatArray, 0x18);
@@ -184,15 +196,17 @@ namespace {
         __try { g_OriginalDispose(driver, disposing, methodInfo); }
         __finally { EndDispose(driver); }
     }
-    bool CheckBody(const unsigned char* parser, const unsigned char* dispose) {
+    bool CheckBody(const unsigned char* parser, const unsigned char* dispose, const DriverLayout& layout) {
         __try {
-            if (parser[0x124] != 0xE8) return false;
+            if (parser[0x124] != 0xE8 || dispose[0xAA] != 0xE8) return false;
             const auto buttons = parser + 0x129 + *reinterpret_cast<const int*>(parser + 0x125);
-            const unsigned char arrayRead[] = {0x49, 0x8B, 0x46, 0x48};
-            const unsigned char axesRead[] = {0x49, 0x8B, 0x5F, 0x30};
-            const unsigned char hatsRead[] = {0x49, 0x8B, 0x5F, 0x20};
+            const auto transport = dispose + 0xAF + *reinterpret_cast<const int*>(dispose + 0xAB);
+            const unsigned char arrayRead[] = {0x49, 0x8B, 0x46, static_cast<unsigned char>(layout.buttons)};
+            const unsigned char axesRead[] = {0x49, 0x8B, 0x5F, static_cast<unsigned char>(layout.axes)};
+            const unsigned char hatsRead[] = {0x49, 0x8B, 0x5F, static_cast<unsigned char>(layout.hats)};
             const unsigned char valueWrite[] = {0x88, 0x56, 0x20, 0xF2, 0x0F, 0x11, 0x76, 0x28};
             const unsigned char disposed[] = {0x80, 0x79, 0x50, 0x00};
+            const unsigned char reportRead[] = {0x48, 0x8B, 0xBE};
             DWORD64 base = 0;
             const auto parseFunction = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(parser), &base, nullptr);
             if (!parseFunction || base + parseFunction->BeginAddress != reinterpret_cast<DWORD64>(parser)) return false;
@@ -200,6 +214,12 @@ namespace {
             if (!buttonFunction || base + buttonFunction->BeginAddress != reinterpret_cast<DWORD64>(buttons)) return false;
             const auto disposeFunction = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(dispose), &base, nullptr);
             return disposeFunction && base + disposeFunction->BeginAddress == reinterpret_cast<DWORD64>(dispose) &&
+                *reinterpret_cast<const unsigned*>(parser + 0x32) == layout.report &&
+                !std::memcmp(dispose + 0x246, reportRead, sizeof(reportRead)) &&
+                *reinterpret_cast<const unsigned*>(dispose + 0x249) == layout.report &&
+                transport[0x17] == 0x80 && transport[0x18] == 0xBE &&
+                *reinterpret_cast<const unsigned*>(transport + 0x19) == layout.bluetooth &&
+                transport[0x1D] == 0 && transport[0x5C] == 0xC6 && transport[0x5D] == 0 && transport[0x5E] == 0x31 &&
                 !std::memcmp(parser + 0x129, axesRead, sizeof(axesRead)) &&
                 !std::memcmp(parser + 0x191, hatsRead, sizeof(hatsRead)) &&
                 !std::memcmp(buttons + 0x47, arrayRead, sizeof(arrayRead)) &&
@@ -213,16 +233,20 @@ namespace {
 void DualSenseBackend::Configure(Logger log, Wanted wanted, Observed observed, Process process, Disconnect disconnect) {
     g_Log = log; g_Wanted = wanted; g_Observed = observed; g_Process = process; g_Disconnect = disconnect;
 }
-void DualSenseBackend::Prepare(Resolver resolve) {
+void DualSenseBackend::Prepare(Resolver resolve, const GameBuild::Profile& build) {
     if (g_Prepared) return;
     g_Prepared = true;
+    const bool overseas = build.region == GameBuild::Region::OS;
+    const auto& layout = overseas ? OsLayout : CnLayout;
     g_ParseEntry = resolve(ParseSignature);
-    g_DisposeEntry = resolve(DisposeSignature);
+    g_DisposeEntry = resolve(overseas ? OsDisposeSignature : DisposeSignature);
     if (!g_ParseEntry || !g_DisposeEntry || !CheckBody(static_cast<const unsigned char*>(g_ParseEntry),
-        static_cast<const unsigned char*>(g_DisposeEntry))) {
+        static_cast<const unsigned char*>(g_DisposeEntry), layout)) {
         g_ParseEntry = nullptr; g_DisposeEntry = nullptr;
         Log("DualSense driver signatures/layout absent or ambiguous; native adapter inactive");
+        return;
     }
+    g_Layout = &layout;
 }
 void DualSenseBackend::Install() {
     if (!g_ParseEntry || !g_DisposeEntry || g_InstallAttempted) return;

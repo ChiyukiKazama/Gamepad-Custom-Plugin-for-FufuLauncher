@@ -5,9 +5,11 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include "MinHook.h"
 #include "HotSwitch.h"
 #include "DeviceActivity.h"
+#include "GameBuild.h"
 
 namespace {
     // Current native input-manager UI update. Its original finishes walking
@@ -33,7 +35,7 @@ namespace {
     // The native settings-page keyboard switch. Only decode its shared
     // callees/metadata; never invoke the wrapper with a fabricated receiver.
     // Its settings child distinguishes it from the second native wrapper.
-    constexpr const char* SwitchSequenceA =
+    constexpr const char* SwitchSequencePrefix =
         "48 8B 15 ? ? ? ? E8 ? ? ? ? 48 89 C7 48 8B 05 ? ? ? ? "
         "48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? BA 01 00 00 00 41 B0 01 E8 ? ? ? ? "
         "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? "
@@ -41,16 +43,7 @@ namespace {
         "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
         "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 48 89 F9 89 C2 E8 ? ? ? ? "
         "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
-        "48 8B 8E 88 03 00 00 48 85 C9";
-    constexpr const char* SwitchSequenceB =
-        "48 8B 15 ? ? ? ? E8 ? ? ? ? 48 89 C7 48 8B 05 ? ? ? ? "
-        "48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? BA 01 00 00 00 41 B0 01 E8 ? ? ? ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? "
-        "BA 02 00 00 00 45 31 C0 E8 ? ? ? ? 48 85 FF 74 ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
-        "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 48 89 F9 89 C2 E8 ? ? ? ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
-        "48 8B 8E A0 02 00 00 48 85 C9";
+        "48 8B 8E ";
     // Native UI-manager device transition, including registered child pages.
     // These are shared functions, not a settings-page wrapper or a page reopen.
     constexpr const char* BeginMenusSignature =
@@ -87,6 +80,7 @@ namespace {
     unsigned g_UiManagerOffset = 0, g_InputManagerOffset = 0, g_InputBlockedOffset = 0;
     unsigned g_InputModeOffset = 0, g_UiModeOffset = 0;
     unsigned g_UiKindOffset = 0, g_PagesOffset = 0, g_PageRefreshOffset = 0, g_ReferenceOffset = 0;
+    unsigned g_PageCountOffset = 0, g_PageItemsOffset = 0;
     unsigned g_PageReadyOffset = 0, g_PageDirtyOffset = 0, g_PageModeStateOffset = 0;
     unsigned g_PreviousUiOffset = 0, g_PreviousInputOffset = 0, g_TargetUiOffset = 0, g_TargetInputOffset = 0;
     HotSwitch::Logger g_Log = nullptr;
@@ -109,6 +103,13 @@ namespace {
     }
     const unsigned char* CallTarget(const unsigned char* call) {
         return call[0] == 0xE8 ? Relative(call + 1) : nullptr;
+    }
+    // Both builds load the same page collection. The OS build uses disp8.
+    unsigned MemberLoadOffset(const unsigned char* load, unsigned registers) {
+        if (load[0] != 0x48 || load[1] != 0x8B) return 0;
+        if (load[2] == (0x80 | registers)) return *reinterpret_cast<const unsigned*>(load + 3);
+        if (load[2] == (0x40 | registers) && load[3] < 0x80) return load[3];
+        return 0;
     }
     bool Focused() {
         DWORD pid = 0;
@@ -218,14 +219,14 @@ namespace {
             const auto bytes = static_cast<const unsigned char*>(ui);
             const auto reference = reinterpret_cast<const float*>(bytes + g_ReferenceOffset);
             const auto pages = *reinterpret_cast<const unsigned char* const*>(bytes + g_PagesOffset);
-            const int count = pages ? *reinterpret_cast<const int*>(pages + 0x20) : 0;
+            const int count = pages ? *reinterpret_cast<const int*>(pages + g_PageCountOffset) : 0;
             char text[4096]{};
             const int written = sprintf_s(text, "Hot switch layout: HUD refreshed=%u; kind=%d; reference=%.0fx%.0f; open pages=%d",
                 hadHud ? 1u : 0u, *reinterpret_cast<const int*>(bytes + g_UiKindOffset),
                 static_cast<double>(reference[0]), static_cast<double>(reference[1]), count);
             if (written < 0) return;
             if (count < 0 || count > 32) { Log(text); return; }
-            const auto array = pages ? *reinterpret_cast<const unsigned char* const*>(pages + 0x10) : nullptr;
+            const auto array = pages ? *reinterpret_cast<const unsigned char* const*>(pages + g_PageItemsOffset) : nullptr;
             if (!array || *reinterpret_cast<const std::size_t*>(array + 0x18) < static_cast<unsigned>(count)) { Log(text); return; }
             const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
             std::size_t used = static_cast<std::size_t>(written);
@@ -348,7 +349,7 @@ void HotSwitch::NotifyGamepadActivity() {
 }
 void HotSwitch::DisconnectXInput(unsigned index) { g_Pads.Disconnect(index); }
 
-void HotSwitch::Prepare(Resolver resolve) {
+void HotSwitch::Prepare(Resolver resolve, const GameBuild::Profile& build) {
     if (!IsEnabled() || g_Prepared) return;
     g_Prepared = true;
     g_UpdateEntry = resolve(UpdateSignature);
@@ -357,12 +358,14 @@ void HotSwitch::Prepare(Resolver resolve) {
     g_Cursor = reinterpret_cast<Update>(resolve(CursorSignature));
     g_BeginMenus = reinterpret_cast<TransitionMenus>(resolve(BeginMenusSignature));
     g_FinishMenus = reinterpret_cast<TransitionMenus>(resolve(FinishMenusSignature));
-    // Both native wrappers have the same HUD/mode/cursor calls in CN 7.2.
-    // Different child offsets (0x388 and 0x2A0) identify two UNIQUE bodies.
-    // Use the first to extract shared callees; require the second to agree.
-    // Never invoke either wrapper with a fabricated page receiver.
-    const auto sequence = static_cast<const unsigned char*>(resolve(SwitchSequenceA));
-    const auto otherSequence = static_cast<const unsigned char*>(resolve(SwitchSequenceB));
+    // The two native wrappers share HUD/mode/cursor callees. Match the
+    // region's two distinct child fields and require both wrappers to agree.
+    const bool overseas = build.region == GameBuild::Region::OS;
+    const std::string prefix = SwitchSequencePrefix;
+    const auto sequence = static_cast<const unsigned char*>(resolve(
+        (prefix + (overseas ? "E8 02 00 00 48 85 C9" : "88 03 00 00 48 85 C9")).c_str()));
+    const auto otherSequence = static_cast<const unsigned char*>(resolve(
+        (prefix + (overseas ? "D8 02 00 00 48 85 C9" : "A0 02 00 00 48 85 C9")).c_str()));
     const auto nativeManager = static_cast<const unsigned char*>(resolve(NativeManagerAccessSignature));
     if (!g_UpdateEntry || !g_SetUiMode || !g_SetInputMode || !g_Cursor || !sequence || !otherSequence || !nativeManager || !g_BeginMenus || !g_FinishMenus) {
         Log("Hot switch signature absent/ambiguous; feature disabled, no fallback scan");
@@ -405,7 +408,7 @@ void HotSwitch::Prepare(Resolver resolve) {
         CallTarget(otherSequence + 0xA6) != cursor ||
         Relative(otherSequence + 0x12) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
         *reinterpret_cast<const unsigned*>(otherSequence + 0x19) != g_UiManagerOffset) {
-        Log("Hot switch CN7.2 wrappers disagree; feature disabled");
+        Log("Hot switch 7.2 wrappers disagree; feature disabled");
         g_Enabled.store(false);
         return;
     }
@@ -416,6 +419,7 @@ void HotSwitch::Prepare(Resolver resolve) {
         !g_InputBlockedOffset || g_InputBlockedOffset >= 0x1000 ||
         !g_InputManagerOffset || g_InputManagerOffset >= 0x40000 ||
         (g_InputManagerOffset % sizeof(void*)) ||
+        g_UiModeOffset != build.uiModeOffset || g_InputModeOffset != build.inputModeOffset ||
         g_InputModeOffset != *reinterpret_cast<const unsigned*>(cursor + 0x16) ||
         g_InputModeOffset != *reinterpret_cast<const unsigned*>(update + 0x4D) ||
         CallTarget(sequence + 0x2E) != uiSetter ||
@@ -426,7 +430,6 @@ void HotSwitch::Prepare(Resolver resolve) {
         !g_GetHud || !g_GetUiKind || !g_RefreshHud ||
         CallTarget(uiSetter + 0x58) != reinterpret_cast<const unsigned char*>(g_GetUiKind) ||
         uiSetter[0x5D] != 0x89 || uiSetter[0x5E] != 0x86 ||
-        uiSetter[0x6B] != 0x48 || uiSetter[0x6C] != 0x8B || uiSetter[0x6D] != 0x86 ||
         uiSetter[0xC7] != 0xFF || uiSetter[0xC8] != 0x90) {
         Log("Hot switch native field cross-check failed; feature disabled");
         g_Enabled.store(false);
@@ -439,16 +442,18 @@ void HotSwitch::Prepare(Resolver resolve) {
         return;
     }
     g_UiKindOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0x5F);
-    g_PagesOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0x6E);
+    g_PagesOffset = MemberLoadOffset(uiSetter + 0x6B, 0x06); // rax, [rsi+offset]
     g_PageRefreshOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0xC9);
     g_ReferenceOffset = *reinterpret_cast<const unsigned*>(layout + 0x8B);
     const auto begin = reinterpret_cast<const unsigned char*>(g_BeginMenus);
     const auto finish = reinterpret_cast<const unsigned char*>(g_FinishMenus);
     const auto preparePage = CallTarget(begin + 0x8F);
     if (!preparePage || !CallTarget(begin + 0x4A) || CallTarget(begin + 0x4A) != CallTarget(finish + 0x4A) ||
-        *reinterpret_cast<const unsigned*>(begin + 0xFB) != g_PagesOffset ||
-        *reinterpret_cast<const unsigned*>(finish + 0x115) != g_PagesOffset ||
+        !g_PagesOffset || MemberLoadOffset(begin + 0xF8, 0x0E) != g_PagesOffset ||
+        MemberLoadOffset(finish + 0x112, 0x0B) != g_PagesOffset ||
         Relative(preparePage + 0x2B) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
+        *reinterpret_cast<const unsigned*>(preparePage + 0x32) != g_UiManagerOffset ||
+        *reinterpret_cast<const unsigned*>(preparePage + 0x42) != g_InputManagerOffset ||
         *reinterpret_cast<const unsigned*>(preparePage + 0x51) != g_UiModeOffset ||
         *reinterpret_cast<const unsigned*>(preparePage + 0x57) != g_InputModeOffset ||
         preparePage[0x1F] != 0x83 || preparePage[0x20] != 0xBF ||
@@ -463,9 +468,11 @@ void HotSwitch::Prepare(Resolver resolve) {
         return;
     }
     // Only used by the bounded, read-only event diagnostic; never written.
+    g_PageCountOffset = overseas ? 0x24 : 0x20;
+    g_PageItemsOffset = overseas ? 0x10 : 0x18;
     g_PageReadyOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x21);
     g_PageDirtyOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x65);
-    g_PageModeStateOffset = preparePage[0x6D]; // movq 0x58(%rdi),%rax on CN 7.2
+    g_PageModeStateOffset = preparePage[0x6D];
     g_PreviousUiOffset = preparePage[0x94]; g_PreviousInputOffset = preparePage[0x97];
     g_TargetUiOffset = preparePage[0xA1]; g_TargetInputOffset = preparePage[0xA5];
     // The input manager is the receiver supplied by its own native update;
@@ -499,5 +506,5 @@ void HotSwitch::Install() {
         return;
     }
     g_Ready.store(true, std::memory_order_release);
-    Log("CN7.2 split native menu transition ready; begin/UI/input/HUD/cursor/finish; XInput backend poll is managed separately");
+    Log("7.2 native menu transition ready; begin/UI/input/HUD/cursor/finish");
 }
