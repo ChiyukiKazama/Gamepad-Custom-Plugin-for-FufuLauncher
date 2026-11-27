@@ -74,9 +74,29 @@ namespace {
     // UnityEngine.Object.get_name() returns a managed UTF-16 string.
     struct ManagedName { void* klass; void* monitor; int length; wchar_t chars[1]; };
     static_assert(offsetof(ManagedName, length) == 0x10 && offsetof(ManagedName, chars) == 0x14);
-    // Required by the overworld cursor sub-fix to identify BeyondClientUIJoypadNavInputDialog;
-    // missing getter keeps g_WorldCursorFixReady false so menus/dialogs are never misclassified.
     using GetObjectName = ManagedName* (WINAPI*)(void*, void*);
+    struct WorldCursorLayout {
+        unsigned pageStack, regularPages, overlayPages;
+        unsigned requestList, requestHead, requestNext, pageStateSlot;
+        unsigned uiCursorMode, pageCursorRequest;
+        unsigned pageProxy, pageObject, pageActivation, pageLoadState, pageNavigation;
+        std::uintptr_t cursorSetterRva, cursorApplyRva, nameThunkRva, nameTargetRva;
+    };
+    // The two builds use the same cursor arbitration code with different object layouts.
+    constexpr WorldCursorLayout CnWorldCursor{
+        0x1E8, 0x240, 0x270,
+        0x98, 0x18, 0x18, 0x160,
+        0x310, 0x1E8,
+        0x68, 0x88, 0x1DC, 0x1EC, 0x1C4,
+        0xA210650, 0xA2065C0, 0x1A226A50, 0x1449820,
+    };
+    constexpr WorldCursorLayout OsWorldCursor{
+        0x38, 0x1A8, 0x288,
+        0x1A0, 0x10, 0x28, 0x2D0,
+        0x334, 0x1C4,
+        0x58, 0x10, 0x1F0, 0x1F8, 0x1C8,
+        0xA1FEEC0, 0xA1F2F40, 0x1A258CF0, 0x144A820,
+    };
     Update g_OriginalUpdate = nullptr, g_Cursor = nullptr;
     SetMode g_SetUiMode = nullptr, g_SetInputMode = nullptr;
     GetPage g_GetHud = nullptr;
@@ -100,7 +120,8 @@ namespace {
     bool g_Diagnostics = false;
     unsigned g_LayoutTraces = 0;
     std::atomic<bool> g_Enabled{ false }, g_Ready{ false };
-    bool g_Prepared = false, g_InstallAttempted = false, g_WorldCursorFixReady = false;
+    bool g_Prepared = false, g_InstallAttempted = false;
+    const WorldCursorLayout* g_WorldCursorLayout = nullptr;
     DeviceActivity g_Activity;
     GamepadActivity g_Pads;
     HWND g_Window = nullptr;
@@ -148,8 +169,9 @@ namespace {
     }
     bool PointerInImageRange(const unsigned char* imageBase, std::size_t imageSize,
         const unsigned char* pointer, std::size_t length) {
-        if (!imageBase || pointer < imageBase) return false;
-        return InImageRange(imageSize, static_cast<std::uintptr_t>(pointer - imageBase), length);
+        const auto base = reinterpret_cast<std::uintptr_t>(imageBase);
+        const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+        return base && address >= base && InImageRange(imageSize, address - base, length);
     }
     bool Focused() {
         DWORD pid = 0;
@@ -167,14 +189,14 @@ namespace {
         __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
     }
     bool OnlyLockedWorldHud(const unsigned char* ui) {
-        if (!g_WorldCursorFixReady || !ui || g_PagesOffset != 0x1E8 ||
-            !g_PageCountOffset || !g_PageItemsOffset) return false;
+        if (!g_WorldCursorLayout || !ui || !g_PageCountOffset || !g_PageItemsOffset) return false;
+        const auto& layout = *g_WorldCursorLayout;
         void* const hud = LookupMainHud(const_cast<unsigned char*>(ui));
         if (!hud) return false;
         __try {
             const auto stack = *reinterpret_cast<const unsigned char* const*>(ui + g_PagesOffset);
-            const auto regular = *reinterpret_cast<const unsigned char* const*>(ui + 0x240);
-            const auto overlay = *reinterpret_cast<const unsigned char* const*>(ui + 0x270);
+            const auto regular = *reinterpret_cast<const unsigned char* const*>(ui + layout.regularPages);
+            const auto overlay = *reinterpret_cast<const unsigned char* const*>(ui + layout.overlayPages);
             if (!stack || !regular || !overlay ||
                 *reinterpret_cast<const int*>(stack + g_PageCountOffset) != 1 ||
                 *reinterpret_cast<const int*>(regular + 0x18) != 0 ||
@@ -184,12 +206,12 @@ namespace {
                 return false;
             const auto top = *reinterpret_cast<const unsigned char* const*>(array + 0x20);
             return top == hud &&
-                *reinterpret_cast<const int*>(top + 0x1E8) == -1;
+                *reinterpret_cast<const int*>(top + layout.pageCursorRequest) == -1;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     bool IsKeyboardWorldUi(bool requireCachedLocked) {
-        if (!g_WorldCursorFixReady) return false;
+        if (!g_WorldCursorLayout) return false;
         __try {
             if (!g_ManagerSlot || !*g_ManagerSlot ||
                 !g_InputManagerOffset || !g_UiManagerOffset ||
@@ -203,14 +225,14 @@ namespace {
                 !*reinterpret_cast<const unsigned char*>(input + g_InputBlockedOffset) &&
                 *reinterpret_cast<const int*>(input + g_InputModeOffset) == 2 &&
                 *reinterpret_cast<const int*>(ui + g_UiModeOffset) == 1 &&
-                (!requireCachedLocked || *reinterpret_cast<const int*>(ui + 0x310) == -1) &&
+                (!requireCachedLocked || *reinterpret_cast<const int*>(ui + g_WorldCursorLayout->uiCursorMode) == -1) &&
                 OnlyLockedWorldHud(ui);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     bool KeyboardCursorLocked() { return IsKeyboardWorldUi(true); }
     bool KeyboardWorldCursorLocked(ULONGLONG now) {
-        return g_WorldCursorFixReady && g_WorldCursorGuard && g_WorldCursorCheckedAt &&
+        return g_WorldCursorLayout && g_WorldCursorGuard && g_WorldCursorCheckedAt &&
             now - g_WorldCursorCheckedAt <= 150 && IsKeyboardWorldUi(false);
     }
     void ReadGameObjectName(const void* obj, char (&name)[160]) {
@@ -227,15 +249,16 @@ namespace {
         __except (EXCEPTION_EXECUTE_HANDLER) { name[0] = '\0'; }
     }
     bool WorldHudIsEffectiveCursorOwner(const unsigned char* ui) {
-        if (!g_WorldCursorFixReady || !g_GetObjectName || !OnlyLockedWorldHud(ui)) return false;
+        if (!g_GetObjectName || !OnlyLockedWorldHud(ui)) return false;
+        const auto& layout = *g_WorldCursorLayout;
         // The one reproducible world-only stray requester is a BeyondClient
         // joypad navigation dialog. When the actual UI stack is only the locked
         // main HUD, its Normal request must not force a Windows arrow on-screen.
         using PageState = int(WINAPI*)(const void*, void*);
         __try {
-            const auto list = *reinterpret_cast<const unsigned char* const*>(ui + 0x98);
+            const auto list = *reinterpret_cast<const unsigned char* const*>(ui + layout.requestList);
             if (!list) return false;
-            const auto head = *reinterpret_cast<const unsigned char* const*>(list + 0x18);
+            const auto head = *reinterpret_cast<const unsigned char* const*>(list + layout.requestHead);
             if (!head) return false;
             auto node = head;
             bool foundKnownDialog = false;
@@ -248,22 +271,22 @@ namespace {
                 if (!page) return false;
                 const auto klass = *reinterpret_cast<const unsigned char* const*>(page);
                 if (!klass) return false;
-                const auto getter = *reinterpret_cast<PageState const*>(klass + 0x160);
+                const auto getter = *reinterpret_cast<PageState const*>(klass + layout.pageStateSlot);
                 if (!getter) return false;
                 const int state = getter(page, nullptr);
-                const int request = *reinterpret_cast<const int*>(page + 0x1E8);
+                const int request = *reinterpret_cast<const int*>(page + layout.pageCursorRequest);
                 if (request != -1 && request != 0 && request != 1000) return false;
                 if (state == 5 && request != 0)
                     return page == g_MainHud && request == -1;
                 if (state != 0 && !(state == 5 && request == 0)) {
                     if (request == 1000) {
                         if (foundKnownDialog || state != 2) return false;
-                        const auto proxy = *reinterpret_cast<const void* const*>(page + 0x68);
-                        const auto object = *reinterpret_cast<const void* const*>(page + 0x88);
+                        const auto proxy = *reinterpret_cast<const void* const*>(page + layout.pageProxy);
+                        const auto object = *reinterpret_cast<const void* const*>(page + layout.pageObject);
                         if (proxy || !object ||
-                            *reinterpret_cast<const int*>(page + 0x1DC) != 0 ||
-                            *reinterpret_cast<const int*>(page + 0x1EC) != 3 ||
-                            *reinterpret_cast<const int*>(page + 0x1C4) != 2)
+                            *reinterpret_cast<const int*>(page + layout.pageActivation) != 0 ||
+                            *reinterpret_cast<const int*>(page + layout.pageLoadState) != 3 ||
+                            *reinterpret_cast<const int*>(page + layout.pageNavigation) != 2)
                             return false;
                         char objectName[160]{};
                         ReadGameObjectName(object, objectName);
@@ -274,7 +297,7 @@ namespace {
                         foundActiveHud = true;
                     }
                 }
-                const auto next = *reinterpret_cast<const unsigned char* const*>(node + 0x18);
+                const auto next = *reinterpret_cast<const unsigned char* const*>(node + layout.requestNext);
                 if (!next) return false;
                 if (next == head) return foundKnownDialog || foundActiveHud;
                 node = next;
@@ -284,15 +307,16 @@ namespace {
         return false;
     }
     bool TryReadUiCursorMode(const void* ui, int& mode) {
-        if (!ui) return false;
+        if (!g_WorldCursorLayout || !ui) return false;
         __try {
-            mode = *reinterpret_cast<const int*>(static_cast<const unsigned char*>(ui) + 0x310);
+            mode = *reinterpret_cast<const int*>(static_cast<const unsigned char*>(ui) +
+                g_WorldCursorLayout->uiCursorMode);
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     bool TrySetNativeCursorLocked(void* ui) {
-        if (!g_WorldCursorFixReady || !g_NativeCursorSetter || !ui) return false;
+        if (!g_WorldCursorLayout || !g_NativeCursorSetter || !ui) return false;
         __try {
             g_NativeCursorSetter(ui, -1, false, nullptr);
             return true;
@@ -308,7 +332,7 @@ namespace {
     void RestoreNativeCursorArbitration(void* ui) {
         g_NativeWorldCursorOverride = false;
         g_NativeWorldCursorUi = nullptr;
-        if (!g_WorldCursorFixReady || !g_RecalculateCursor || !ui) return;
+        if (!g_WorldCursorLayout || !g_RecalculateCursor || !ui) return;
         __try {
             g_RecalculateCursor(ui, false, nullptr);
         }
@@ -323,7 +347,7 @@ namespace {
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     void UpdateWorldCursorState(void* instance, void* ui, int current, int uiMode, ULONGLONG now) {
-        if (!g_WorldCursorFixReady) return;
+        if (!g_WorldCursorLayout) return;
         if (g_CursorRepairUntil && now >= g_CursorRepairUntil)
             g_CursorRepairUntil = 0;
         const bool keyboardForeground = Focused() && current == 2 && uiMode == 1;
@@ -393,7 +417,7 @@ namespace {
                 g_Activity.Clear();
                 g_RawMouseSeen = false;
                 g_IgnoreMouseUntil = now + 500;
-                if (g_WorldCursorFixReady) {
+                if (g_WorldCursorLayout) {
                     g_CursorRepairUntil = now + 2000;
                     g_CursorRepairAttempts = 0;
                     g_CursorRepairLast = 0;
@@ -405,7 +429,7 @@ namespace {
                 // Windows can reset the pointer on focus/movement after the game
                 // has already cached Locked. Intercept client-only repaint, not
                 // menu cursors or non-client/window-border cursor messages.
-                if (g_WorldCursorFixReady && window == g_Window && LOWORD(detail) == HTCLIENT &&
+                if (g_WorldCursorLayout && window == g_Window && LOWORD(detail) == HTCLIENT &&
                     Focused() && (KeyboardCursorLocked() || KeyboardWorldCursorLocked(now))) {
                     SetCursor(nullptr);
                     return TRUE;
@@ -600,7 +624,7 @@ namespace {
         void* ui = nullptr;
         int current = 0, uiMode = 0;
         if (!ReadManagers(instance, ui, current, uiMode)) {
-            if (g_WorldCursorFixReady) {
+            if (g_WorldCursorLayout) {
                 g_WorldCursorGuard = false;
                 g_WorldCursorCheckedAt = 0;
                 if (g_NativeWorldCursorOverride) {
@@ -621,7 +645,7 @@ namespace {
             g_FirstTick = false;
         }
         const auto now = GetTickCount64();
-        if (g_WorldCursorFixReady)
+        if (g_WorldCursorLayout)
             UpdateWorldCursorState(instance, ui, current, uiMode, now);
         const auto token = g_Activity.Peek(now);
         if (!token || token == g_Handled) return;
@@ -632,7 +656,7 @@ namespace {
         if (!Focused()) return;
         // Cursor recentering during the native switch must not count as mouse use.
         g_IgnoreMouseUntil = now + 500;
-        if (g_WorldCursorFixReady) {
+        if (g_WorldCursorLayout) {
             g_WorldCursorGuard = false;
             g_WorldCursorCheckedAt = 0;
             g_NativeWorldCursorOverride = false;
@@ -648,7 +672,7 @@ namespace {
             return;
         }
         g_LastSwitchTime = now;
-        if (g_WorldCursorFixReady && current == 3 && requested == 2) {
+        if (g_WorldCursorLayout && current == 3 && requested == 2) {
             g_CursorRepairUntil = now + 2000;
             g_CursorRepairAttempts = 0;
             g_CursorRepairLast = 0;
@@ -659,80 +683,80 @@ namespace {
         Log(text);
         TraceLayout(ui, hadHud);
     }
-    void PrepareWorldCursorFix(const unsigned char* nativeManager, const unsigned char* begin) {
-        g_RecalculateCursor = nullptr;
-        g_InputHotSwap = nullptr;
-        g_NativeCursorSetter = nullptr;
-        g_GetObjectName = nullptr;
-        g_WorldCursorFixReady = false;
+    void PrepareWorldCursorFix(const GameBuild::Profile& build,
+        const unsigned char* nativeManager, const unsigned char* begin) {
+        const bool overseas = build.region == GameBuild::Region::OS;
+        const auto& layout = overseas ? OsWorldCursor : CnWorldCursor;
+        const auto imageBase = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
+        const std::size_t imageSize = GetImageSize(imageBase);
+        const auto cursorEntry = reinterpret_cast<const unsigned char*>(g_Cursor);
+        constexpr unsigned char nameTargetEntry[] = { 0x40, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00 };
+        if (imageSize != build.imageSize ||
+            !PointerInImageRange(imageBase, imageSize, nativeManager, 0x587) ||
+            !PointerInImageRange(imageBase, imageSize, cursorEntry, 0x48) ||
+            !InImageRange(imageSize, layout.cursorSetterRva, 0x46) ||
+            !InImageRange(imageSize, layout.cursorApplyRva, 1) ||
+            !InImageRange(imageSize, layout.nameThunkRva, 5) ||
+            !InImageRange(imageSize, layout.nameTargetRva, sizeof(nameTargetEntry))) {
+            Log("Hot switch cursor entry out of PE bounds; overworld cursor fix disabled");
+            return;
+        }
 
-        // 1. Verify CN 7.2 native cursor recalculation and InputHotSwap transaction.
+        // Both native transactions call the same sequence with region-specific targets.
         const auto recalc = CallTarget(nativeManager + 0x516);
         const auto hotSwap = CallTarget(nativeManager + 0x53A);
-        const auto cursorEntry = reinterpret_cast<const unsigned char*>(g_Cursor);
+        const auto applyCursor = imageBase + layout.cursorApplyRva;
         const unsigned char beforeHotSwap[] = { 0x41, 0xB8, 0x04, 0x00, 0x00, 0x00 };
         const unsigned char afterHotSwap[] = { 0xB2, 0x01, 0x41, 0xB8, 0x04, 0x00, 0x00, 0x00 };
         if (!recalc || !hotSwap ||
+            !PointerInImageRange(imageBase, imageSize, recalc, 0x1CD) ||
+            !PointerInImageRange(imageBase, imageSize, hotSwap, 1) ||
             CallTarget(nativeManager + 0x4F8) != cursorEntry ||
             CallTarget(nativeManager + 0x55E) != reinterpret_cast<const unsigned char*>(g_FinishMenus) ||
             CallTarget(nativeManager + 0x582) != hotSwap ||
             cursorEntry[0x43] != 0xE9 || recalc[0x1C8] != 0xE9 ||
-            Relative(cursorEntry + 0x44) != Relative(recalc + 0x1C9) ||
+            Relative(cursorEntry + 0x44) != applyCursor || Relative(recalc + 0x1C9) != applyCursor ||
             nativeManager[0x514] != 0x31 || nativeManager[0x515] != 0xD2 ||
             std::memcmp(nativeManager + 0x534, beforeHotSwap, sizeof(beforeHotSwap)) != 0 ||
             std::memcmp(nativeManager + 0x57A, afterHotSwap, sizeof(afterHotSwap)) != 0) {
-            Log("Hot switch CN7.2 cursor transaction mismatch; overworld cursor fix disabled");
+            Log("Hot switch cursor transaction mismatch; overworld cursor fix disabled");
             return;
         }
 
-        // 2. Verify CN 7.2 UIManager cursor setter and UnityEngine.Object.get_name() within PE bounds.
-        const auto imageBase = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
-        const std::size_t imageSize = GetImageSize(imageBase);
-        constexpr std::uintptr_t NativeCursorSetterRva = 0xA210650;
-        constexpr std::uintptr_t NativeCursorTargetRva = 0xA2065C0;
-        constexpr std::uintptr_t GetObjectNameThunkRva = 0x1A226A50;
-        const unsigned char cacheWrite[] = { 0x89, 0xB7, 0x10, 0x03, 0x00, 0x00 };
-        if (!imageSize ||
-            !InImageRange(imageSize, NativeCursorSetterRva, 0x46) ||
-            !InImageRange(imageSize, NativeCursorTargetRva, 1)) {
-            Log("Hot switch CN7.2 native cursor setter out of PE bounds; overworld cursor fix disabled");
-            return;
-        }
-        const auto setter = imageBase + NativeCursorSetterRva;
-        if (std::memcmp(setter + 0x32, cacheWrite, sizeof(cacheWrite)) != 0 ||
-            setter[0x41] != 0xE9 ||
-            Relative(setter + 0x42) != imageBase + NativeCursorTargetRva) {
-            Log("Hot switch CN7.2 native cursor setter mismatch; overworld cursor fix disabled");
+        const auto setter = imageBase + layout.cursorSetterRva;
+        if (setter[0x32] != 0x89 || setter[0x33] != 0xB7 ||
+            *reinterpret_cast<const unsigned*>(setter + 0x34) != layout.uiCursorMode ||
+            setter[0x41] != 0xE9 || Relative(setter + 0x42) != applyCursor) {
+            Log("Hot switch native cursor setter mismatch; overworld cursor fix disabled");
             return;
         }
 
-        const unsigned char expectedThunk[] = { 0xE9, 0xCB, 0x2D, 0x22, 0xE7 };
-        const unsigned char expectedTarget[] = { 0x40, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00 };
-        if (!InImageRange(imageSize, GetObjectNameThunkRva, sizeof(expectedThunk))) {
-            Log("Hot switch CN7.2 object name getter out of PE bounds; overworld cursor fix disabled");
-            return;
-        }
-        const auto nameThunk = imageBase + GetObjectNameThunkRva;
-        if (std::memcmp(nameThunk, expectedThunk, sizeof(expectedThunk)) != 0) {
-            Log("Hot switch CN7.2 object name thunk mismatch; overworld cursor fix disabled");
-            return;
-        }
-        const auto nameTarget = Relative(nameThunk + 1);
-        if (!PointerInImageRange(imageBase, imageSize, nameTarget, sizeof(expectedTarget)) ||
-            std::memcmp(nameTarget, expectedTarget, sizeof(expectedTarget)) != 0) {
-            Log("Hot switch CN7.2 object name target mismatch; overworld cursor fix disabled");
+        const auto nameThunk = imageBase + layout.nameThunkRva;
+        const auto nameTarget = imageBase + layout.nameTargetRva;
+        if (nameThunk[0] != 0xE9 || Relative(nameThunk + 1) != nameTarget ||
+            std::memcmp(nameTarget, nameTargetEntry, sizeof(nameTargetEntry)) != 0) {
+            Log("Hot switch object name getter mismatch; overworld cursor fix disabled");
             return;
         }
 
-        // 3. Verify CN 7.2 UIManager page collection offsets (stack=0x1E8, regular=0x240, overlay=0x270).
-        const unsigned char regularLoad[] = { 0x48, 0x8B, 0x8E, 0x40, 0x02, 0x00, 0x00 };
-        const unsigned char overlayLoad[] = { 0x48, 0x8B, 0x8E, 0x70, 0x02, 0x00, 0x00 };
-        const unsigned char stackLoad[] = { 0x48, 0x8B, 0x8E, 0xE8, 0x01, 0x00, 0x00 };
-        if (g_PagesOffset != 0x1E8 ||
-            std::memcmp(begin + 0x33, regularLoad, sizeof(regularLoad)) != 0 ||
-            std::memcmp(begin + 0x98, overlayLoad, sizeof(overlayLoad)) != 0 ||
-            std::memcmp(begin + 0xF8, stackLoad, sizeof(stackLoad)) != 0) {
-            Log("Hot switch CN7.2 page collections mismatch; overworld cursor fix disabled");
+        if (g_PagesOffset != layout.pageStack ||
+            MemberLoadOffset(begin + 0x33, 0x0E) != layout.regularPages ||
+            MemberLoadOffset(begin + 0x98, 0x0E) != layout.overlayPages) {
+            Log("Hot switch cursor page collections mismatch; overworld cursor fix disabled");
+            return;
+        }
+
+        // Cross-check the fields and virtual getter used when walking native cursor requests.
+        if (MemberLoadOffset(recalc + 0x3F, 0x06) != layout.requestList ||
+            MemberLoadOffset(recalc + 0x4F, 0x28) != layout.requestHead ||
+            MemberLoadOffset(recalc + 0x70, 0x3D) != 0x20 ||
+            MemberLoadOffset(recalc + 0xB0, 0x05) != layout.requestNext ||
+            MemberLoadOffset(recalc + 0xDF, 0x0D) != 0x10 ||
+            recalc[0x85] != 0xFF || recalc[0x86] != 0x90 ||
+            *reinterpret_cast<const unsigned*>(recalc + 0x87) != layout.pageStateSlot ||
+            recalc[0x9D] != 0x8B || recalc[0x9E] != 0xBF ||
+            *reinterpret_cast<const unsigned*>(recalc + 0x9F) != layout.pageCursorRequest) {
+            Log("Hot switch cursor request layout mismatch; overworld cursor fix disabled");
             return;
         }
 
@@ -740,8 +764,8 @@ namespace {
         g_InputHotSwap = reinterpret_cast<InputHotSwap>(const_cast<unsigned char*>(hotSwap));
         g_NativeCursorSetter = reinterpret_cast<NativeCursorSetter>(const_cast<unsigned char*>(setter));
         g_GetObjectName = reinterpret_cast<GetObjectName>(const_cast<unsigned char*>(nameThunk));
-        g_WorldCursorFixReady = true;
-        Log("Hot switch CN7.2 overworld cursor fix ready");
+        g_WorldCursorLayout = &layout;
+        Log(overseas ? "Hot switch OS7.2 overworld cursor fix ready" : "Hot switch CN7.2 overworld cursor fix ready");
     }
 }
 
@@ -876,7 +900,7 @@ void HotSwitch::Prepare(Resolver resolve, const GameBuild::Profile& build) {
         g_Enabled.store(false);
         return;
     }
-    // Only used by the bounded, read-only event diagnostic; never written.
+    // Native stack count and backing array, read by the HUD guard and diagnostics.
     g_PageCountOffset = overseas ? 0x24 : 0x20;
     g_PageItemsOffset = overseas ? 0x10 : 0x18;
     g_PageReadyOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x21);
@@ -884,8 +908,7 @@ void HotSwitch::Prepare(Resolver resolve, const GameBuild::Profile& build) {
     g_PageModeStateOffset = preparePage[0x6D];
     g_PreviousUiOffset = preparePage[0x94]; g_PreviousInputOffset = preparePage[0x97];
     g_TargetUiOffset = preparePage[0xA1]; g_TargetInputOffset = preparePage[0xA5];
-    if (build.region == GameBuild::Region::CN)
-        PrepareWorldCursorFix(nativeManager, begin);
+    PrepareWorldCursorFix(build, nativeManager, begin);
     // The input manager is the receiver supplied by its own native update;
     // no additional root-table offset or setting-page instance is guessed.
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
