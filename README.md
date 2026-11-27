@@ -2,7 +2,7 @@
 
 用于[芙芙启动器](https://github.com/FufuLauncher/FufuLauncher)的原神 Xbox / DualSense（PS5）手柄自定义插件，插件文件为 `GamepadCustomPlugin.dll`。
 
-当前版本：**1.2.0**。
+当前版本：**1.2.1**。
 
 当前适配国服和国际服 **7.2**，需要同时使用适配对应游戏的启动器主插件。两服共用 DLL 和配置，插件按进程名及 PE 指纹选择对应的原生入口和字段。
 
